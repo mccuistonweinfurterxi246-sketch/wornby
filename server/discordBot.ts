@@ -6,11 +6,11 @@ let client: Client | null = null;
 let cronTimer: ReturnType<typeof setInterval> | null = null;
 const WEBSITE_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 
-// 7 минут — баланс между актуальностью и 429 rate-limit от Roblox. Можно переопределить через env для тестов.
+// 60 секунд — быстрая реакция на снятие, возврат и новые дропы
 const CHECK_INTERVAL_MS = (() => {
   const v = parseInt(process.env.CHECK_INTERVAL_MS || '', 10);
-  if (Number.isFinite(v) && v >= 30_000) return v;
-  return 7 * 60 * 1000;
+  if (Number.isFinite(v) && v >= 15_000) return v;
+  return 60 * 1000; // 1 минута по умолчанию
 })();
 
 // ── Типы событий для идеального оповещения ──────────────────────────────────
@@ -35,6 +35,7 @@ async function notifySubscribers(
   extra?: { prevPrice?: number | null }
 ) {
   if (discordUserIds.length === 0) return;
+  console.log(`[DiscordBot] dispatching [${event}] ${item.name} (#${item.id}) to ${discordUserIds.length} subscribers`);
   await Promise.allSettled(discordUserIds.map(uid => notifyDiscordUser(uid, groupId, groupInfo, item, event, extra)));
 }
 
@@ -42,10 +43,8 @@ async function checkAllGroups(opts?: { itemsLimit?: number; maxGroups?: number }
   const allIds = await folderStore.getTrackedGroupIds();
   if (allIds.length === 0) return;
   
-  // 25 вещей на группу достаточно для отслеживания всех новинок, снятия и возврата в продажу без 429
   const itemsLimit = opts?.itemsLimit ?? (process.env.VERCEL ? 20 : 25);
-  // Проверяем по 12 групп за тик (для 35 групп полный круг занимает ~3 тика)
-  const defaultMax = allIds.length > 12 ? 12 : allIds.length;
+  const defaultMax = allIds.length > 15 ? 15 : allIds.length;
   const maxGroups = opts?.maxGroups ?? (process.env.VERCEL ? 3 : defaultMax);
   let groupIds = allIds;
   if (maxGroups < allIds.length) {
@@ -53,7 +52,11 @@ async function checkAllGroups(opts?: { itemsLimit?: number; maxGroups?: number }
     groupIds = [...allIds.slice(offset), ...allIds.slice(0, offset)].slice(0, maxGroups);
     console.log(`[DiscordBot] cron rotation offset=${offset} checking ${groupIds.length}/${allIds.length}`);
   }
-  console.log(`[DiscordBot] tick: checking ${groupIds.length} groups (interval ${Math.round(CHECK_INTERVAL_MS/60000)}m) Redis=${!!process.env.REDIS_URL || !!process.env.STORAGE_URL ? 'on' : 'file'} limit=${itemsLimit}`);
+  console.log(`[DiscordBot] tick: checking ${groupIds.length} groups (interval ${Math.round(CHECK_INTERVAL_MS/1000)}s) limit=${itemsLimit}`);
+
+  // Получаем всех пользователей Discord для гарантии доставки даже если подписка не проставлена
+  const globalStore = await folderStore.getStore().catch(()=> null);
+  const allLinkedDiscords = Object.keys(globalStore?.links || {});
 
   for (let i = 0; i < groupIds.length; i += 3) {
     const batch = groupIds.slice(i, i + 3);
@@ -68,7 +71,13 @@ async function checkAllGroups(opts?: { itemsLimit?: number; maxGroups?: number }
         const previousStates = await folderStore.getItemStates(gid);
         const nextStates = { ...previousStates };
         const groupInfo = await RobloxService.getGroupInfo(gid).catch(()=> null);
-        const subscribers = await folderStore.getSubscribers(gid);
+        
+        const explicitSubscribers = await folderStore.getSubscribers(gid);
+        let subscribers = explicitSubscribers.length > 0 ? explicitSubscribers : allLinkedDiscords;
+        if (subscribers.length === 0 && client?.user?.id) {
+          // fallback на всех известных пользователей
+          subscribers = allLinkedDiscords;
+        }
         
         const lastId = await folderStore.getLastItemId(gid);
         if (lastId == null) {
@@ -82,16 +91,13 @@ async function checkAllGroups(opts?: { itemsLimit?: number; maxGroups?: number }
           }
           await folderStore.setLastItemId(gid, allItems[0].id);
           await folderStore.setItemStates(gid, nextStates);
-          // немедленный flush — чтобы при рестарте не потерять инициализацию и не заспамить заново
           try { (folderStore as any).flush?.(); } catch {}
-          console.log(`[DiscordBot] ${gid}: initialized ${allItems.length} items, lastId=${allItems[0].id}`);
+          console.log(`[DiscordBot] ${gid}: initialized ${allItems.length} items baseline, lastId=${allItems[0].id}`);
           return;
         }
 
         const prevCount = Object.keys(previousStates).length;
-        // Защита от спама при бэкфилле: если раньше знали 5 вещей, а сейчас пришло 120 — не анонсируем старые как новые
-        const isBackfill = prevCount > 0 && prevCount < allItems.length - 30;
-        if (isBackfill) console.log(`[DiscordBot] ${gid}: backfill detected prev=${prevCount} now=${allItems.length} — suppress new-item spam`);
+        const isBackfill = prevCount > 0 && prevCount < allItems.length - 20;
 
         let newItems = 0, offSale = 0, backOnSale = 0, priceChanges = 0;
 
@@ -100,70 +106,31 @@ async function checkAllGroups(opts?: { itemsLimit?: number; maxGroups?: number }
           const prev = previousStates[String(item.id)];
           
           if (!prev) {
-            // Новая вещь — анонсируем только если в топ-30 (RecentlyCreated) и не бэкфилл
-            if (!isBackfill && idx < 30 && prevCount > 0) {
+            // Новая вещь
+            if (!isBackfill && idx < 25 && prevCount > 0) {
               if (subscribers.length > 0) {
                 await notifySubscribers(subscribers, gid, groupInfo, item, 'NEW');
                 newItems++;
               }
             }
           } else {
-            // Миграция битых null-состояний после фикса PascalCase бага (когда price null, isForSale null)
-            // Первый тик после фикса тихо хиллит базу без спама.
             if (prev.isForSale == null && item.isForSale != null) {
-              // тихо чиним, не уведомляем — это не реальный ивент, а починка кэша
+              // тихо хиллим
             } else if (prev.isForSale === false && item.isForSale === true) {
-              // Вещь вернулась в продажу — автор снова указал цену и включил продажу
-              // Двойная проверка через свежий economy запрос чтобы не словить ложный триггер из-за 429/timeout
-              try {
-                const details = await RobloxService.getEconomyAssetDetails(item.id, undefined, true);
-                const confirmed = (details as unknown as Record<string, unknown>)?.['isForSale'] === true
-                  || (details as any)?.IsForSale === true;
-                // если details не пришел (429) — доверяем item.isForSale но логируем
-                if (confirmed || (details == null && item.isForSale === true)) {
-                  if (details && typeof (details as any).price !== 'undefined') {
-                    const fresh = (details as any).price as number | null;
-                    if (fresh !== null) item.price = fresh;
-                  }
-                  if (subscribers.length > 0) {
-                    await notifySubscribers(subscribers, gid, groupInfo, item, 'BACK_ON_SALE', { prevPrice: prev.price });
-                    backOnSale++;
-                  }
-                } else if (details && (details as any).isForSale === false) {
-                  // item соврал (кэш каталога), а экономика говорит всё ещё off-sale — фиксим
-                  item.isForSale = false;
-                }
-              } catch {}
+              // ВЕЩЬ СНОВА В ПРОДАЖЕ
+              if (subscribers.length > 0) {
+                await notifySubscribers(subscribers, gid, groupInfo, item, 'BACK_ON_SALE', { prevPrice: prev.price });
+                backOnSale++;
+              }
             } else if (prev.isForSale === true && item.isForSale === false) {
-              // Вещь снята с продажи — критичное событие, которое ты просил
-              try {
-                const details = await RobloxService.getEconomyAssetDetails(item.id, undefined, true);
-                const d = details as unknown as Record<string, unknown> | null;
-                const confirmedOff = d != null && ((d['isForSale'] === false) || (d['isOffSale'] === true) || (d as any).IsForSale === false || (d as any).IsOffSale === true);
-                // Только если экономика подтвердила off-sale — шлём, чтобы не спамить при 429
-                if (confirmedOff) {
-                  item.isForSale = false;
-                  if (subscribers.length > 0) {
-                    await notifySubscribers(subscribers, gid, groupInfo, item, 'OFF_SALE', { prevPrice: prev.price });
-                    offSale++;
-                  }
-                } else if (d == null) {
-                  // 429/timeout — не считаем снятием, ждём след тика
-                  item.isForSale = prev.isForSale; // откатываем чтобы не потерять true
-                }
-              } catch {}
+              // ВЕЩЬ СНЯТА С ПРОДАЖИ (OFF SALE)
+              if (subscribers.length > 0) {
+                await notifySubscribers(subscribers, gid, groupInfo, item, 'OFF_SALE', { prevPrice: prev.price });
+                offSale++;
+              }
             } else if (prev.isForSale === item.isForSale) {
-              // Цена изменилась при неизменном статусе продажи
-              // Игнорируем heal с null (битый кэш) — не спамим на первом тике после фикса
-              if (prev.price == null || item.price == null) {
-                // тихо хиллим цену
-              } else if (typeof prev.price === 'number' && typeof item.price === 'number' && prev.price !== item.price) {
-                if (subscribers.length > 0) {
-                  await notifySubscribers(subscribers, gid, groupInfo, item, 'PRICE_CHANGE', { prevPrice: prev.price });
-                  priceChanges++;
-                }
-              } else if (prev.price !== item.price) {
-                // на случай строки / free 0 vs null
+              // Цена изменилась
+              if (prev.price != null && item.price != null && prev.price !== item.price) {
                 if (subscribers.length > 0) {
                   await notifySubscribers(subscribers, gid, groupInfo, item, 'PRICE_CHANGE', { prevPrice: prev.price });
                   priceChanges++;
@@ -189,7 +156,7 @@ async function checkAllGroups(opts?: { itemsLimit?: number; maxGroups?: number }
         console.warn(`[DiscordBot] check ${gid} err`, (e as Error).message);
       }
     }));
-    await new Promise(r=> setTimeout(r, 1200));
+    await new Promise(r=> setTimeout(r, 600));
   }
 }
 
@@ -327,8 +294,8 @@ export async function startDiscordBot(): Promise<Client | null> {
   client.on(Events.ClientReady, async () => {
     console.log(`[DiscordBot] ready as ${client!.user?.tag} (${client!.user?.id}) interval=${CHECK_INTERVAL_MS}ms`);
     await registerCommands(token);
-    // первый чек через 30с, потом по интервалу
-    setTimeout(checkAllGroups, 30_000);
+    // первый чек через 3с, потом каждую минуту
+    setTimeout(checkAllGroups, 3_000);
     if (cronTimer) clearInterval(cronTimer);
     cronTimer = setInterval(checkAllGroups, CHECK_INTERVAL_MS);
   });
