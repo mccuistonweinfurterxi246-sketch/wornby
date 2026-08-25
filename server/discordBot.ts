@@ -41,13 +41,15 @@ async function notifySubscribers(
 async function checkAllGroups(opts?: { itemsLimit?: number; maxGroups?: number }) {
   const allIds = await folderStore.getTrackedGroupIds();
   if (allIds.length === 0) return;
-  // 31 группа × 120 = 3720 economy → 429. Ротируем 3/тикта даже на Railway (31/3 ≈ 70м полный круг)
-  const itemsLimit = opts?.itemsLimit ?? (process.env.VERCEL ? 40 : 40);
-  const defaultMax = allIds.length > 10 ? 3 : allIds.length;
+  
+  // 25 вещей на группу достаточно для отслеживания всех новинок, снятия и возврата в продажу без 429
+  const itemsLimit = opts?.itemsLimit ?? (process.env.VERCEL ? 20 : 25);
+  // Проверяем по 12 групп за тик (для 35 групп полный круг занимает ~3 тика)
+  const defaultMax = allIds.length > 12 ? 12 : allIds.length;
   const maxGroups = opts?.maxGroups ?? (process.env.VERCEL ? 3 : defaultMax);
   let groupIds = allIds;
   if (maxGroups < allIds.length) {
-    const offset = Math.floor(Date.now() / (7*60*1000)) % allIds.length;
+    const offset = Math.floor(Date.now() / CHECK_INTERVAL_MS) % allIds.length;
     groupIds = [...allIds.slice(offset), ...allIds.slice(0, offset)].slice(0, maxGroups);
     console.log(`[DiscordBot] cron rotation offset=${offset} checking ${groupIds.length}/${allIds.length}`);
   }
