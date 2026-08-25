@@ -306,8 +306,8 @@ async function registerCommands(token: string) {
       .toJSON(),
     new SlashCommandBuilder()
       .setName('link')
-      .setDescription('Привязать Roblox ник к Discord')
-      .addStringOption(o=> o.setName('roblox_username').setDescription('Ник Roblox').setRequired(true))
+      .setDescription('Привязать Roblox ник и сразу загрузить все его группы')
+      .addStringOption(o=> o.setName('roblox_username').setDescription('Ник Roblox (например galomf666)').setRequired(true))
       .toJSON(),
     new SlashCommandBuilder()
       .setName('unlink')
@@ -320,10 +320,67 @@ async function registerCommands(token: string) {
   ];
   try {
     const appId = (await rest.get(Routes.oauth2CurrentApplication()) as { id: string }).id;
+    // 1) Global
     await rest.put(Routes.applicationCommands(appId), { body: commands });
-    console.log('[DiscordBot] slash commands registered successfully');
+    // 2) Guild-specific (мгновенное появление в Discord без ожидания глобального кэша)
+    if (client) {
+      for (const [guildId] of client.guilds.cache) {
+        await rest.put(Routes.applicationGuildCommands(appId, guildId), { body: commands }).catch(()=>{});
+      }
+    }
+    console.log('[DiscordBot] slash commands registered globally and for all guilds');
   } catch (e) {
     console.warn('[DiscordBot] register commands err', (e as Error).message);
+  }
+}
+
+// ── Вспомогательная функция отслеживания игрока ────────────────────────────
+async function handleTrackPlayer(discordUserId: string, username: string): Promise<{ success: boolean; message?: string; embed?: EmbedBuilder }> {
+  try {
+    const user = await RobloxService.resolveUser(username);
+    const groups = await RobloxService.getUserGroups(user.id);
+
+    if (!groups || groups.length === 0) {
+      return { success: false, message: `❌ У игрока **${user.name}** не найдено открытых групп в Roblox.` };
+    }
+
+    await folderStore.link(discordUserId, user.name);
+
+    const metaToSave: { id: number; name: string; memberCount: number; iconUrl?: string }[] = [];
+    for (const g of groups) {
+      await folderStore.track(g.id, discordUserId, user.name);
+      metaToSave.push({
+        id: g.id,
+        name: g.name,
+        memberCount: g.memberCount,
+        iconUrl: g.iconUrl ?? undefined,
+      });
+      RobloxService.getGroupNewItems(g.id, 1).then(async d => {
+        const latest = d.items[0];
+        if (latest?.id) await folderStore.setLastItemId(g.id, latest.id);
+      }).catch(()=>{});
+    }
+    await folderStore.setGroupMetasBulk(metaToSave).catch(()=>{});
+
+    setTimeout(() => checkAllGroups({ itemsLimit: 25, maxGroups: groups.length }), 2000);
+
+    const embed = new EmbedBuilder()
+      .setColor(0x10B981)
+      .setTitle(`🎉 Подключено ${groups.length} групп игрока ${user.displayName || user.name}`)
+      .setDescription(`Все **${groups.length} групп** игрока **[@${user.name}](https://www.roblox.com/users/${user.id}/profile)** добавлены в ваше отслеживание!\n\nБот опрашивает их каждую минуту. Уведомления о новых дропах и снятии с продажи будут приходить прямо сюда в DM.`)
+      .addFields(
+        groups.slice(0, 12).map(g => ({
+          name: g.name.slice(0, 100),
+          value: `👥 **${g.memberCount.toLocaleString()}** members · [\`#${g.id}\`](https://www.roblox.com/groups/${g.id})`,
+          inline: true,
+        }))
+      )
+      .setFooter({ text: groups.length > 12 ? `...и ещё ${groups.length - 12} групп. Напишите /folder или !folder для полного списка.` : 'WornBy Drops • Мониторинг активен' })
+      .setTimestamp(new Date());
+
+    return { success: true, embed };
+  } catch (err) {
+    return { success: false, message: `❌ Не удалось найти игрока **${username}** в Roblox. Проверьте правильность ника.` };
   }
 }
 
@@ -336,7 +393,12 @@ export async function startDiscordBot(): Promise<Client | null> {
   if (client) return client;
 
   client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages],
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.DirectMessages,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent
+    ],
     partials: [Partials.Channel, Partials.Message, Partials.User],
   });
 
@@ -346,6 +408,120 @@ export async function startDiscordBot(): Promise<Client | null> {
     setTimeout(checkAllGroups, 3_000);
     if (cronTimer) clearInterval(cronTimer);
     cronTimer = setInterval(checkAllGroups, CHECK_INTERVAL_MS);
+  });
+
+  // ── Текстовые команды (!track_player galomf666, !folder, !check и т.д.) ──
+  client.on(Events.MessageCreate, async (msg) => {
+    if (msg.author.bot) return;
+    const text = msg.content.trim();
+    const discordUserId = msg.author.id;
+
+    // !track_player / track_player / .track_player
+    const trackPlayerMatch = text.match(/^[!/.]?track_player\s+([A-Za-z0-9_]+)$/i) || text.match(/^!trackplayer\s+([A-Za-z0-9_]+)$/i);
+    if (trackPlayerMatch && trackPlayerMatch[1]) {
+      const username = trackPlayerMatch[1];
+      const replyMsg = await msg.reply(`⏳ Ищу группы игрока **${username}** в Roblox...`);
+      const res = await handleTrackPlayer(discordUserId, username);
+      if (res.embed) await replyMsg.edit({ content: '', embeds: [res.embed] });
+      else await replyMsg.edit({ content: res.message || '❌ Ошибка' });
+      return;
+    }
+
+    // !track / track
+    const trackMatch = text.match(/^[!/.]?track\s+(\S+)$/i);
+    if (trackMatch && trackMatch[1] && !text.toLowerCase().startsWith('!track_player')) {
+      const gid = parseGroupId(trackMatch[1]);
+      if (!gid) {
+        await msg.reply('❌ Неверный ID или ссылка на группу. Пример: `!track 32683521` или `!track_player galomf666`');
+        return;
+      }
+      const replyMsg = await msg.reply(`⏳ Получаю данные группы **#${gid}**...`);
+      const info = await RobloxService.getGroupInfo(gid).catch(()=> null);
+      await folderStore.track(gid, discordUserId);
+      if (info?.name) {
+        await folderStore.setGroupMeta(gid, { name: info.name, memberCount: info.memberCount ?? 0 }).catch(()=>{});
+      }
+      RobloxService.getGroupNewItems(gid, 1).then(async d => {
+        const latest = d.items[0];
+        if (latest?.id) await folderStore.setLastItemId(gid, latest.id);
+      }).catch(()=>{});
+
+      const embed = new EmbedBuilder()
+        .setColor(0x10B981)
+        .setTitle(`✅ Группа добавлена: ${info?.name ?? `Group #${gid}`}`)
+        .setURL(`https://www.roblox.com/groups/${gid}`)
+        .setDescription(`Группа **[${info?.name ?? `#${gid}`}](https://www.roblox.com/groups/${gid})** успешно добавлена в отслеживание!\n\nБот проверяет её каждую минуту и уведомит вас в DM.`)
+        .addFields(
+          { name: 'ID группы', value: `\`${gid}\``, inline: true },
+          { name: 'Участников', value: info?.memberCount ? `**${info.memberCount.toLocaleString()}**` : '—', inline: true },
+          { name: 'Интервал проверки', value: '⚡ Каждую минуту (60с)', inline: true },
+        )
+        .setTimestamp(new Date());
+
+      await replyMsg.edit({ content: '', embeds: [embed] });
+      return;
+    }
+
+    // !folder / folder
+    if (/^[!/.]?folder$/i.test(text)) {
+      const roblox = await folderStore.getRobloxForDiscord(discordUserId);
+      const allGroups = await folderStore.getTrackedGroupIds();
+      const savedMetas = await folderStore.getAllGroupMetas();
+      const groupInfos: { id: number; name: string; memberCount: number }[] = [];
+
+      for (const gid of allGroups) {
+        const meta = savedMetas[String(gid)];
+        groupInfos.push({
+          id: gid,
+          name: meta?.name || `Group #${gid}`,
+          memberCount: meta?.memberCount ?? 0,
+        });
+      }
+
+      if (groupInfos.length === 0) {
+        await msg.reply('📁 Ваша папка пуста. Напишите `!track_player galomf666` чтобы добавить все группы игрока разом!');
+        return;
+      }
+
+      groupInfos.sort((a,b)=> b.memberCount - a.memberCount);
+      const embed = new EmbedBuilder()
+        .setColor(0xF59E0B)
+        .setAuthor({ name: `WornBy — ${roblox ? `@${roblox}` : 'Мои группы'}` })
+        .setTitle(`📁 Отслеживается ${groupInfos.length} групп`)
+        .setDescription(`Бот проверяет эти группы **каждую минуту** и присылает уведомления в DM.`)
+        .addFields(groupInfos.slice(0, 25).map((g, idx) => ({
+          name: `${idx + 1}. ${g.name}`.slice(0, 256),
+          value: `👥 **${g.memberCount.toLocaleString()}** members · [\`#${g.id}\`](https://www.roblox.com/groups/${g.id})`,
+          inline: true,
+        })))
+        .setFooter({ text: 'Добавить: !track_player <ник> или !track <ID> • Проверить: !check' })
+        .setTimestamp(new Date());
+
+      await msg.reply({ embeds: [embed] });
+      return;
+    }
+
+    // !check / check
+    if (/^[!/.]?check$/i.test(text)) {
+      const allGroups = await folderStore.getTrackedGroupIds();
+      const replyMsg = await msg.reply(`⚡ Запускаю проверку ${allGroups.length} групп...`);
+      await checkAllGroups({ itemsLimit: 25, maxGroups: allGroups.length });
+      await replyMsg.edit(`✅ Проверка завершена! Проверено **${allGroups.length} групп**. Все актуальные события отправлены в DM.`);
+      return;
+    }
+
+    // !help / help
+    if (/^[!/.]?help$/i.test(text)) {
+      await msg.reply(
+        '👑 **WornBy Drops — Команды в чате:**\n' +
+        '• `!track_player galomf666` — отслеживать **все группы игрока** разом!\n' +
+        '• `!track 32683521` — добавить группу по ID или ссылке\n' +
+        '• `!folder` — открыть список своих групп\n' +
+        '• `!check` — мгновенно проверить все группы прямо сейчас\n' +
+        '• `!clear` — очистить список'
+      );
+      return;
+    }
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
@@ -611,8 +787,14 @@ export async function startDiscordBot(): Promise<Client | null> {
           await interaction.editReply({ content: `❌ Неверный Roblox ник \`${roblox}\`` });
           return;
         }
-        await folderStore.link(discordUserId, roblox);
-        await interaction.editReply({ content: `✅ Привязан аккаунт <@${discordUserId}> → **${roblox}**\nСовет: напишите \`/track_player ${roblox}\`, чтобы сразу отслеживать все группы этого игрока!` });
+        await interaction.editReply({ content: `⏳ Привязываю аккаунт и ищу все группы игрока **${roblox}**...` });
+        const res = await handleTrackPlayer(discordUserId, roblox);
+        if (res.embed) {
+          await interaction.editReply({ content: `✅ Привязан аккаунт <@${discordUserId}> → **${roblox}**`, embeds: [res.embed] });
+        } else {
+          await folderStore.link(discordUserId, roblox);
+          await interaction.editReply({ content: `✅ Привязан аккаунт <@${discordUserId}> → **${roblox}**` });
+        }
 
       // ── /unlink ──────────────────────────────────────────────────────────
       } else if (interaction.commandName === 'unlink') {
