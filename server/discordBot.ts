@@ -1,12 +1,22 @@
-import { Client, GatewayIntentBits, Partials, EmbedBuilder, SlashCommandBuilder, REST, Routes, Events, MessageFlags } from 'discord.js';
+import {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  EmbedBuilder,
+  MessageFlags,
+  Events,
+} from 'discord.js';
 import { folderStore } from './folderStore.js';
 import { RobloxService } from './robloxService.js';
 
 let client: Client | null = null;
 let cronTimer: ReturnType<typeof setInterval> | null = null;
-const WEBSITE_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+const WEBSITE_URL = (process.env.FRONTEND_URL || 'https://syntax3-app.vercel.app').replace(/\/$/, '');
 
-// 60 секунд — быстрая реакция на снятие, возврат и новые дропы
+// 60 секунд — быстрая реакция на снятие с продажи, возврат и новые дропы
 const CHECK_INTERVAL_MS = (() => {
   const v = parseInt(process.env.CHECK_INTERVAL_MS || '', 10);
   if (Number.isFinite(v) && v >= 15_000) return v;
@@ -24,6 +34,20 @@ function eventMeta(event: DropEvent, price: number | null) {
     case 'PRICE_CHANGE': return { color: 0xF59E0B, emoji: '💰', label: 'Цена изменилась', footer: price === 0 ? 'Now free' : `${price} R$` };
     default: return { color: 0x10B981, emoji: '🔔', label: 'Обновление', footer: 'Update' };
   }
+}
+
+function parseGroupId(input: string | number): number | null {
+  if (typeof input === 'number' && Number.isFinite(input) && input > 0) return input;
+  const str = String(input).trim();
+  const directNum = parseInt(str, 10);
+  if (Number.isFinite(directNum) && directNum > 0 && /^\d+$/.test(str)) return directNum;
+  // Парсинг ссылок: roblox.com/groups/32683521/... или roblox.com/communities/32683521/...
+  const match = str.match(/(?:groups|communities)\/(\d+)/i);
+  if (match && match[1]) {
+    const id = parseInt(match[1], 10);
+    if (Number.isFinite(id) && id > 0) return id;
+  }
+  return null;
 }
 
 async function notifySubscribers(
@@ -50,9 +74,7 @@ async function checkAllGroups(opts?: { itemsLimit?: number; maxGroups?: number }
   if (maxGroups < allIds.length) {
     const offset = Math.floor(Date.now() / CHECK_INTERVAL_MS) % allIds.length;
     groupIds = [...allIds.slice(offset), ...allIds.slice(0, offset)].slice(0, maxGroups);
-    console.log(`[DiscordBot] cron rotation offset=${offset} checking ${groupIds.length}/${allIds.length}`);
   }
-  console.log(`[DiscordBot] tick: checking ${groupIds.length} groups (interval ${Math.round(CHECK_INTERVAL_MS/1000)}s) limit=${itemsLimit}`);
 
   // Получаем всех пользователей Discord для гарантии доставки даже если подписка не проставлена
   const globalStore = await folderStore.getStore().catch(()=> null);
@@ -63,10 +85,7 @@ async function checkAllGroups(opts?: { itemsLimit?: number; maxGroups?: number }
     await Promise.all(batch.map(async (gid) => {
       try {
         const allItems = await RobloxService.getAllGroupItems(gid, itemsLimit);
-        if (allItems.length === 0) {
-          console.log(`[DiscordBot] ${gid}: no items returned (group empty or API 429)`);
-          return;
-        }
+        if (allItems.length === 0) return;
         
         const previousStates = await folderStore.getItemStates(gid);
         const nextStates = { ...previousStates };
@@ -75,7 +94,6 @@ async function checkAllGroups(opts?: { itemsLimit?: number; maxGroups?: number }
         const explicitSubscribers = await folderStore.getSubscribers(gid);
         let subscribers = explicitSubscribers.length > 0 ? explicitSubscribers : allLinkedDiscords;
         if (subscribers.length === 0 && client?.user?.id) {
-          // fallback на всех известных пользователей
           subscribers = allLinkedDiscords;
         }
         
@@ -92,7 +110,6 @@ async function checkAllGroups(opts?: { itemsLimit?: number; maxGroups?: number }
           await folderStore.setLastItemId(gid, allItems[0].id);
           await folderStore.setItemStates(gid, nextStates);
           try { (folderStore as any).flush?.(); } catch {}
-          console.log(`[DiscordBot] ${gid}: initialized ${allItems.length} items baseline, lastId=${allItems[0].id}`);
           return;
         }
 
@@ -156,7 +173,7 @@ async function checkAllGroups(opts?: { itemsLimit?: number; maxGroups?: number }
         console.warn(`[DiscordBot] check ${gid} err`, (e as Error).message);
       }
     }));
-    await new Promise(r=> setTimeout(r, 600));
+    await new Promise(r=> setTimeout(r, 500));
   }
 }
 
@@ -173,8 +190,6 @@ async function notifyDiscordUser(
     const priceNow = item.price;
     const prevPrice = extra?.prevPrice;
 
-    // Заголовок и описание по типу события — идеально для кейса "сняли и вернули в продажу, указав цену"
-    // CSP: sanitize group description/name to avoid @everyone/@here ping и markdown injection в Discord
     const safeGroupName = (groupInfo?.name ?? `Group #${groupId}`).toString().slice(0,80).replace(/[@`]/g,'·');
     const safeDesc = (groupInfo?.description ?? '').toString().slice(0,120).replace(/[@`]/g,'·').replace(/\n/g,' ');
     let title = '';
@@ -232,7 +247,7 @@ async function notifyDiscordUser(
       .setFooter({ text: `WornBy Drops • ${meta.footer} • #${groupId} • ${meta.label}` })
       .setTimestamp(new Date());
 
-    // 1) пробуем Gateway client (локально)
+    // 1) Gateway DM (локально / Railway)
     if (client) {
       try {
         const user = await client.users.fetch(discordUserId).catch(()=> null);
@@ -243,7 +258,7 @@ async function notifyDiscordUser(
         }
       } catch {}
     }
-    // 2) REST fallback (Vercel serverless — нет Gateway)
+    // 2) REST fallback
     const token = process.env.DISCORD_BOT_TOKEN?.trim();
     if (!token) return;
     try {
@@ -262,17 +277,51 @@ async function notifyDiscordUser(
 async function registerCommands(token: string) {
   const rest = new REST({ version: '10' }).setToken(token);
   const commands = [
-    new SlashCommandBuilder().setName('help').setDescription('Как подключить сайт и получать уведомления').toJSON(),
-    new SlashCommandBuilder().setName('link').setDescription('Резервная привязка Roblox к Discord').addStringOption(o=> o.setName('roblox_username').setDescription('Roblox username').setRequired(true)).toJSON(),
-    new SlashCommandBuilder().setName('unlink').setDescription('Отключить свои уведомления').toJSON(),
-    new SlashCommandBuilder().setName('folder').setDescription('Показать свои группы').toJSON(),
-    new SlashCommandBuilder().setName('track').setDescription('Добавить группу по ID').addIntegerOption(o=> o.setName('group_id').setDescription('ID группы').setRequired(true)).toJSON(),
-    new SlashCommandBuilder().setName('untrack').setDescription('Убрать группу из своих подписок').addIntegerOption(o=> o.setName('group_id').setDescription('ID группы').setRequired(true)).toJSON(),
+    new SlashCommandBuilder()
+      .setName('track_player')
+      .setDescription('Отслеживать ВСЕ группы игрока Roblox (в 1 клик)')
+      .addStringOption(o=> o.setName('roblox_username').setDescription('Ник игрока Roblox (например galomf666)').setRequired(true))
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName('track')
+      .setDescription('Добавить группу по ID или ссылке')
+      .addStringOption(o=> o.setName('group').setDescription('ID группы или ссылка на группу Roblox').setRequired(true))
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName('folder')
+      .setDescription('Показать все отслеживаемые группы')
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName('check')
+      .setDescription('Мгновенно проверить все группы прямо сейчас')
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName('untrack')
+      .setDescription('Убрать группу из отслеживания')
+      .addStringOption(o=> o.setName('group').setDescription('ID группы или ссылка').setRequired(true))
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName('clear')
+      .setDescription('Очистить все свои отслеживаемые группы')
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName('link')
+      .setDescription('Привязать Roblox ник к Discord')
+      .addStringOption(o=> o.setName('roblox_username').setDescription('Ник Roblox').setRequired(true))
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName('unlink')
+      .setDescription('Отвязать свой аккаунт')
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName('help')
+      .setDescription('Инструкция по использованию бота')
+      .toJSON(),
   ];
   try {
-    // global commands
-    await rest.put(Routes.applicationCommands((await rest.get(Routes.oauth2CurrentApplication()) as { id: string }).id), { body: commands });
-    console.log('[DiscordBot] slash commands registered');
+    const appId = (await rest.get(Routes.oauth2CurrentApplication()) as { id: string }).id;
+    await rest.put(Routes.applicationCommands(appId), { body: commands });
+    console.log('[DiscordBot] slash commands registered successfully');
   } catch (e) {
     console.warn('[DiscordBot] register commands err', (e as Error).message);
   }
@@ -294,7 +343,6 @@ export async function startDiscordBot(): Promise<Client | null> {
   client.on(Events.ClientReady, async () => {
     console.log(`[DiscordBot] ready as ${client!.user?.tag} (${client!.user?.id}) interval=${CHECK_INTERVAL_MS}ms`);
     await registerCommands(token);
-    // первый чек через 3с, потом каждую минуту
     setTimeout(checkAllGroups, 3_000);
     if (cronTimer) clearInterval(cronTimer);
     cronTimer = setInterval(checkAllGroups, CHECK_INTERVAL_MS);
@@ -305,49 +353,138 @@ export async function startDiscordBot(): Promise<Client | null> {
     const discordUserId = interaction.user.id;
     try {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      // ── /help ────────────────────────────────────────────────────────────
       if (interaction.commandName === 'help') {
-        const isRussian = interaction.locale?.toLowerCase().startsWith('ru');
         const embed = new EmbedBuilder()
           .setColor(0xF59E0B)
-          .setTitle(isRussian ? 'WornBy Drops — инструкция' : 'WornBy Drops — Quick start')
-          .setDescription(isRussian
-            ? 'Бот следит за группами из твоей папки на сайте и присылает важные изменения в личные сообщения.'
-            : 'The bot watches groups in your website folder and sends important changes to your DMs.')
+          .setTitle('👑 WornBy Drops — Инструкция по боту')
+          .setDescription('Бот непрерывно отслеживает группы Roblox и мгновенно присылает уведомления в DM при выходе новых вещей, снятии с продажи и изменении цен.')
           .addFields(
-            { name: isRussian ? 'Как начать (1 клик)' : 'Get started (1 click)', value: isRussian
-              ? `1. [Открой WornBy](${WEBSITE_URL}) → нажми **Connect Discord** (ник Roblox вводить не надо).\n2. Подтверди в Discord → вернёт на сайт.\n3. Нажми **Copy** у любой группы — бот уже следит и пришлёт DM.`
-              : `1. [Open WornBy](${WEBSITE_URL}) → click **Connect Discord** (no Roblox name needed).\n2. Authorize → back to site.\n3. Click **Copy** on any group — bot will DM you.` },
-            { name: isRussian ? 'Что отслеживается' : 'What is tracked', value: isRussian
-              ? 'Новая одежда/аксессуар, **снятие с продажи**, **возврат в продажу (с указанием цены)** и изменение цены.'
-              : 'New clothing/accessories, **going off sale**, **back on sale (with price)**, and price changes.' },
-            { name: isRussian ? 'Нужно ли /link?' : 'Need /link?', value: isRussian
-              ? 'Нет — `/link` это резерв если сайт не открывается. Для сайта достаточно `Connect Discord`.'
-              : 'No — `/link` is fallback if site is down. For site just use `Connect Discord`.' },
-            { name: isRussian ? 'Команды' : 'Commands', value: isRussian
-              ? '`/folder` — мои группы\n`/untrack ID` — убрать группу\n`/unlink` — отключить уведомления'
-              : '`/folder` — my groups\n`/untrack ID` — remove a group\n`/unlink` — disable notifications' },
-            { name: isRussian ? 'Сайт' : 'Website', value: `[${WEBSITE_URL}](${WEBSITE_URL})` },
+            { name: '⚡ Быстрое добавление в 1 команду', value: 
+              '`/track_player galomf666` — отслеживать **все группы игрока** разом!\n' +
+              '`/track 32683521` — добавить группу по ID или ссылке\n' +
+              '`/folder` — открыть список своих групп\n' +
+              '`/check` — мгновенно проверить все группы прямо сейчас\n' +
+              '`/untrack <ID>` — убрать группу из отслеживания\n' +
+              '`/clear` — очистить список'
+            },
+            { name: '🔔 Что ловит бот (каждые 60 сек)', value:
+              '• 🆕 **Новая вещь** в группе (с картинкой, ценой и ссылкой)\n' +
+              '• ⛔ **Снята с продажи (Off Sale)**\n' +
+              '• ✅ **Снова в продаже (Back on Sale)**\n' +
+              '• 💰 **Изменение цены** (например 100 → 150 R$)'
+            },
+            { name: '🌐 Сайт', value: `[Открыть WornBy](${WEBSITE_URL})` }
           )
-          .setFooter({ text: isRussian ? 'Логин Roblox в Discord вводить не нужно.' : 'You never need to enter your Roblox login in Discord.' });
+          .setFooter({ text: 'WornBy Drops • Мониторинг групп Roblox 24/7' });
         await interaction.editReply({ embeds: [embed] });
-      } else if (interaction.commandName === 'link') {
-        const roblox = interaction.options.getString('roblox_username', true).trim();
-        if (!/^[A-Za-z][A-Za-z0-9_]{2,19}$/.test(roblox)) {
-          await interaction.editReply({ content: `❌ Invalid Roblox username \`${roblox}\`` });
+
+      // ── /track_player ────────────────────────────────────────────────────
+      } else if (interaction.commandName === 'track_player') {
+        const username = interaction.options.getString('roblox_username', true).trim();
+        await interaction.editReply({ content: `⏳ Ищу группы игрока **${username}** в Roblox...` });
+
+        try {
+          const user = await RobloxService.resolveUser(username);
+          const groups = await RobloxService.getUserGroups(user.id);
+
+          if (!groups || groups.length === 0) {
+            await interaction.editReply({ content: `❌ У игрока **${user.name}** не найдено открытых групп в Roblox.` });
+            return;
+          }
+
+          // Привязываем ник к Discord
+          await folderStore.link(discordUserId, user.name);
+
+          const metaToSave: { id: number; name: string; memberCount: number; iconUrl?: string }[] = [];
+          for (const g of groups) {
+            await folderStore.track(g.id, discordUserId, user.name);
+            metaToSave.push({
+              id: g.id,
+              name: g.name,
+              memberCount: g.memberCount,
+              iconUrl: g.iconUrl ?? undefined,
+            });
+            // Инициализация baseline
+            RobloxService.getGroupNewItems(g.id, 1).then(async d => {
+              const latest = d.items[0];
+              if (latest?.id) await folderStore.setLastItemId(g.id, latest.id);
+            }).catch(()=>{});
+          }
+          await folderStore.setGroupMetasBulk(metaToSave).catch(()=>{});
+
+          // Прогреваем в фоне
+          setTimeout(() => checkAllGroups({ itemsLimit: 25, maxGroups: groups.length }), 2000);
+
+          const embed = new EmbedBuilder()
+            .setColor(0x10B981)
+            .setTitle(`🎉 Подключено ${groups.length} групп игрока ${user.displayName || user.name}`)
+            .setDescription(`Все **${groups.length} групп** игрока **[@${user.name}](https://www.roblox.com/users/${user.id}/profile)** добавлены в ваше отслеживание!\n\nБот опрашивает их каждую минуту. Уведомления о новых дропах и снятии с продажи будут приходить прямо сюда в DM.`)
+            .addFields(
+              groups.slice(0, 10).map(g => ({
+                name: g.name.slice(0, 100),
+                value: `👥 **${g.memberCount.toLocaleString()}** members · [\`#${g.id}\`](https://www.roblox.com/groups/${g.id})`,
+                inline: true,
+              }))
+            )
+            .setFooter({ text: groups.length > 10 ? `...и ещё ${groups.length - 10} групп. Напишите /folder для полного списка.` : 'WornBy Drops • Мониторинг активен' })
+            .setTimestamp(new Date());
+
+          await interaction.editReply({ content: '', embeds: [embed] });
+        } catch (err) {
+          await interaction.editReply({ content: `❌ Не удалось найти игрока **${username}** в Roblox. Проверьте правильность ника.` });
+        }
+
+      // ── /track ───────────────────────────────────────────────────────────
+      } else if (interaction.commandName === 'track') {
+        const input = interaction.options.getString('group', true).trim();
+        const gid = parseGroupId(input);
+
+        if (!gid) {
+          await interaction.editReply({ content: `❌ Неверный ID или ссылка на группу. Пример: \`/track 32683521\` или \`/track https://www.roblox.com/groups/32683521\`` });
           return;
         }
-        await folderStore.link(discordUserId, roblox);
-        await interaction.editReply({ content: `✅ Linked <@${discordUserId}> → **${roblox}**\nТеперь скопированные на сайте группы для **${roblox}** будут приходить тебе в DM.` });
-      } else if (interaction.commandName === 'unlink') {
-        await folderStore.unlink(discordUserId);
-        await interaction.editReply({ content: `🔓 Unlinked.` });
+
+        await interaction.editReply({ content: `⏳ Получаю данные группы **#${gid}**...` });
+        const info = await RobloxService.getGroupInfo(gid).catch(()=> null);
+
+        await folderStore.track(gid, discordUserId);
+        if (info?.name) {
+          await folderStore.setGroupMeta(gid, {
+            name: info.name,
+            memberCount: info.memberCount ?? 0,
+          }).catch(()=>{});
+        }
+
+        // Инициализируем baseline
+        RobloxService.getGroupNewItems(gid, 1).then(async d => {
+          const latest = d.items[0];
+          if (latest?.id) await folderStore.setLastItemId(gid, latest.id);
+        }).catch(()=>{});
+
+        const embed = new EmbedBuilder()
+          .setColor(0x10B981)
+          .setTitle(`✅ Группа добавлена: ${info?.name ?? `Group #${gid}`}`)
+          .setURL(`https://www.roblox.com/groups/${gid}`)
+          .setDescription(`Группа **[${info?.name ?? `#${gid}`}](https://www.roblox.com/groups/${gid})** успешно добавлена в отслеживание!\n\nБот проверяет её каждую минуту и уведомит вас в DM при новых вещах, снятии с продажи или изменении цен.`)
+          .addFields(
+            { name: 'ID группы', value: `\`${gid}\``, inline: true },
+            { name: 'Участников', value: info?.memberCount ? `**${info.memberCount.toLocaleString()}**` : '—', inline: true },
+            { name: 'Интервал проверки', value: '⚡ Каждую минуту (60с)', inline: true },
+          )
+          .setFooter({ text: 'WornBy Drops • Напишите /folder чтобы посмотреть все группы' })
+          .setTimestamp(new Date());
+
+        await interaction.editReply({ content: '', embeds: [embed] });
+
+      // ── /folder ──────────────────────────────────────────────────────────
       } else if (interaction.commandName === 'folder') {
         const roblox = await folderStore.getRobloxForDiscord(discordUserId);
         const allGroups = await folderStore.getTrackedGroupIds();
         const subsMap = new Map<number, string[]>();
         for (const gid of allGroups) subsMap.set(gid, await folderStore.getSubscribers(gid));
         
-        // Включаем все группы, привязанные к пользователю или сохраненные на сайте
         let myGroups = allGroups.filter(gid => {
           const subs = subsMap.get(gid) ?? [];
           if (subs.includes(discordUserId)) return true;
@@ -355,7 +492,7 @@ export async function startDiscordBot(): Promise<Client | null> {
           return true;
         });
         
-        // Авто-привязка подписки на случай, если группы скопированы без входа
+        // Авто-привязка подписки
         for (const gid of myGroups) {
           const subs = subsMap.get(gid) ?? [];
           if (!subs.includes(discordUserId)) {
@@ -364,12 +501,22 @@ export async function startDiscordBot(): Promise<Client | null> {
         }
         
         if (myGroups.length === 0) {
-          await interaction.editReply({ content: roblox ? `📁 Папка пуста для **${roblox}**. Скопируй группу на сайте — бот запомнит.` : `📁 Сначала \`/link ROBLOX_USERNAME\` или скопируй группу на сайте` });
+          const emptyEmbed = new EmbedBuilder()
+            .setColor(0xF59E0B)
+            .setTitle('📁 Папка пуста')
+            .setDescription(
+              'У вас пока нет отслеживаемых групп.\n\n' +
+              '**Как добавить группы:**\n' +
+              '1. `/track_player <ник_roblox>` — например `/track_player galomf666` (добавит **все группы игрока** разом!)\n' +
+              '2. `/track <ID или ссылка>` — например `/track 32683521`\n' +
+              `3. Или [откройте сайт WornBy](${WEBSITE_URL}) и нажмите **Copy** у любой группы.`
+            );
+          await interaction.editReply({ embeds: [emptyEmbed] });
           return;
         }
-        // Загружаем сохраненные метаданные (названия и участников)
+
         const savedMetas = await folderStore.getAllGroupMetas();
-        const groupInfos: { id: number; name: string; memberCount: number; description: string }[] = [];
+        const groupInfos: { id: number; name: string; memberCount: number }[] = [];
         const missingIds: number[] = [];
 
         for (const gid of myGroups) {
@@ -379,7 +526,6 @@ export async function startDiscordBot(): Promise<Client | null> {
               id: gid,
               name: meta.name,
               memberCount: meta.memberCount ?? 0,
-              description: '',
             });
           } else {
             missingIds.push(gid);
@@ -387,7 +533,6 @@ export async function startDiscordBot(): Promise<Client | null> {
         }
 
         if (missingIds.length > 0) {
-          // Чанками по 5, чтобы не словить 429 от Roblox API
           for (let i = 0; i < missingIds.length; i += 5) {
             const batch = missingIds.slice(i, i + 5);
             await Promise.all(batch.map(async (gid) => {
@@ -398,76 +543,88 @@ export async function startDiscordBot(): Promise<Client | null> {
                     id: gid,
                     name: info.name,
                     memberCount: info.memberCount ?? 0,
-                    description: (info.description ?? '').slice(0, 90),
                   });
                   await folderStore.setGroupMeta(gid, {
                     name: info.name,
                     memberCount: info.memberCount ?? 0,
                   }).catch(() => {});
                 } else {
-                  groupInfos.push({ id: gid, name: `Group #${gid}`, memberCount: 0, description: '' });
+                  groupInfos.push({ id: gid, name: `Group #${gid}`, memberCount: 0 });
                 }
               } catch {
-                groupInfos.push({ id: gid, name: `Group #${gid}`, memberCount: 0, description: '' });
+                groupInfos.push({ id: gid, name: `Group #${gid}`, memberCount: 0 });
               }
             }));
-            if (i + 5 < missingIds.length) {
-              await new Promise(r => setTimeout(r, 400));
-            }
+            if (i + 5 < missingIds.length) await new Promise(r => setTimeout(r, 300));
           }
         }
 
-        // сортировка по members desc
         groupInfos.sort((a,b)=> b.memberCount - a.memberCount);
         const chunks: typeof groupInfos[] = [];
         for (let i=0;i<groupInfos.length;i+=25) chunks.push(groupInfos.slice(i,i+25));
+        
         const embeds = chunks.map((chunk, idx) => new EmbedBuilder()
           .setColor(0xF59E0B)
-          .setAuthor({ name: `Copied Folder — ${roblox ?? 'WornBy'}${chunks.length>1 ? ` (${idx+1}/${chunks.length})` : ''}` })
-          .setTitle(idx===0 ? `📁 ${myGroups.length} groups tracked` : `📁 continued`)
-          .setDescription(idx===0 ? `Для **${roblox ?? 'тебя'}** • авто-уведомления в DM при новых шмотках, снятии и возврате в продажу` : `…ещё ${chunk.length} групп`)
-          .addFields(chunk.map(g => ({
-            name: `${g.name}`.slice(0,256),
-            value: `**${g.memberCount.toLocaleString()}** members · [\`#${g.id}\`](https://www.roblox.com/groups/${g.id})`,
+          .setAuthor({ name: `WornBy — ${roblox ? `@${roblox}` : 'Мои группы'}${chunks.length>1 ? ` (${idx+1}/${chunks.length})` : ''}` })
+          .setTitle(idx===0 ? `📁 Отслеживается ${groupInfos.length} групп` : `📁 Продолжение списка (${idx+1}/${chunks.length})`)
+          .setDescription(idx===0 ? `Бот проверяет эти группы **каждую минуту** и присылает уведомления в DM.` : `…ещё ${chunk.length} групп`)
+          .addFields(chunk.map((g, itemIdx) => ({
+            name: `${idx * 25 + itemIdx + 1}. ${g.name}`.slice(0,256),
+            value: `👥 **${g.memberCount.toLocaleString()}** members · [\`#${g.id}\`](https://www.roblox.com/groups/${g.id})`,
             inline: true,
           })))
-          .setFooter({ text: `WornBy • /track /untrack • Check new on site` })
+          .setFooter({ text: 'Добавить: /track_player или /track • Проверить: /check • Удалить: /untrack' })
           .setTimestamp(new Date()));
-        try {
-          await interaction.editReply({ embeds: embeds.slice(0,10) });
-        } catch (e) {
-          // fallback — если embed слишком большой (редкий 40060), шлём plain текст
-          console.warn('[DiscordBot] folder embed fail', (e as Error).message);
-          await interaction.editReply({ content: `📁 ${myGroups.length} groups: ${myGroups.map(id=>`#${id}`).join(', ')}` }).catch(()=>{});
-        }
-      } else if (interaction.commandName === 'track') {
-        const gid = interaction.options.getInteger('group_id', true);
-        await folderStore.track(gid, discordUserId);
-        RobloxService.getGroupInfo(gid).then(async (info) => {
-          if (info?.name) {
-            await folderStore.setGroupMeta(gid, {
-              name: info.name,
-              memberCount: info.memberCount ?? 0,
-            }).catch(() => {});
-          }
-        }).catch(() => {});
-        // Сидим тихо: инициализируем кэш без спама — подтягиваем 1 новинку для lastItemId
-        const seed = await import('./robloxService.js').then(m=> m.RobloxService.getAllGroupItems(gid, 30).then(d=> d[0]?.id ?? 0).catch(()=>0));
-        if (seed) await folderStore.setLastItemId(gid, seed);
-        // прогреваем itemStates в фоне чтобы след тик не триггерил бэкфилл
-        import('./robloxService.js').then(async m=> { const items = await m.RobloxService.getAllGroupItems(gid, 120).catch(()=>[]); if (items.length) { const st: Record<string,{name:string;price:number|null;isForSale:boolean|null}> = {}; for (const it of items) st[String(it.id)] = { name: it.name, price: it.price, isForSale: it.isForSale }; await folderStore.setItemStates(gid, st); } }).catch(()=>{});
-        await interaction.editReply({ content: `✅ Tracking **${gid}** — уведомления придут в DM при снятии/возврате в продажу и новинках.` });
+
+        await interaction.editReply({ embeds: embeds.slice(0, 10) });
+
+      // ── /check ───────────────────────────────────────────────────────────
+      } else if (interaction.commandName === 'check') {
+        const allGroups = await folderStore.getTrackedGroupIds();
+        await interaction.editReply({ content: `⚡ Запускаю мгновенную проверку ${allGroups.length} групп на новинки и изменения...` });
+        await checkAllGroups({ itemsLimit: 25, maxGroups: allGroups.length });
+        await interaction.editReply({ content: `✅ Проверка завершена! Проверено **${allGroups.length} групп**. Все актуальные события отправлены в DM.` });
+
+      // ── /untrack ─────────────────────────────────────────────────────────
       } else if (interaction.commandName === 'untrack') {
-        const gid = interaction.options.getInteger('group_id', true);
+        const input = interaction.options.getString('group', true).trim();
+        const gid = parseGroupId(input);
+        if (!gid) {
+          await interaction.editReply({ content: `❌ Укажите корректный ID группы. Пример: \`/untrack 32683521\`` });
+          return;
+        }
         await folderStore.untrack(gid, discordUserId);
-        await interaction.editReply({ content: `🗑️ Untracked **${gid}**` });
+        await interaction.editReply({ content: `🗑️ Группа **#${gid}** убрана из отслеживания.` });
+
+      // ── /clear ───────────────────────────────────────────────────────────
+      } else if (interaction.commandName === 'clear') {
+        const allGroups = await folderStore.getTrackedGroupIds();
+        for (const gid of allGroups) {
+          await folderStore.untrack(gid, discordUserId);
+        }
+        await interaction.editReply({ content: `🗑️ Все отслеживаемые группы успешно очищены.` });
+
+      // ── /link ────────────────────────────────────────────────────────────
+      } else if (interaction.commandName === 'link') {
+        const roblox = interaction.options.getString('roblox_username', true).trim();
+        if (!/^[A-Za-z0-9_]{2,25}$/.test(roblox)) {
+          await interaction.editReply({ content: `❌ Неверный Roblox ник \`${roblox}\`` });
+          return;
+        }
+        await folderStore.link(discordUserId, roblox);
+        await interaction.editReply({ content: `✅ Привязан аккаунт <@${discordUserId}> → **${roblox}**\nСовет: напишите \`/track_player ${roblox}\`, чтобы сразу отслеживать все группы этого игрока!` });
+
+      // ── /unlink ──────────────────────────────────────────────────────────
+      } else if (interaction.commandName === 'unlink') {
+        await folderStore.unlink(discordUserId);
+        await interaction.editReply({ content: `🔓 Аккаунт отвязан.` });
       }
     } catch (e) {
       console.warn('[DiscordBot] interaction err', (e as Error).message);
       if (interaction.isRepliable()) {
         const errorReply = interaction.deferred || interaction.replied
-          ? interaction.editReply({ content: `❌ Error` })
-          : interaction.reply({ content: `❌ Error`, flags: MessageFlags.Ephemeral });
+          ? interaction.editReply({ content: `❌ Произошла ошибка при выполнении команды.` })
+          : interaction.reply({ content: `❌ Произошла ошибка при выполнении команды.`, flags: MessageFlags.Ephemeral });
         await errorReply.catch(()=>{});
       }
     }
@@ -484,12 +641,10 @@ export function getDiscordClient(): Client | null {
 }
 
 export async function notifyNewItemForGroup(groupId: number, item: { id:number; name:string; price?:number|null; isForSale?: boolean | null }) {
-  // вызывается вручную если хотим пуш сразу после Check new на сайте
   const subscribers = await folderStore.getSubscribers(groupId);
-  if (subscribers.length===0) return;
+  if (subscribers.length === 0) return;
   const groupInfo = await RobloxService.getGroupInfo(groupId).catch(()=> null);
   for (const uid of subscribers) await notifyDiscordUser(uid, groupId, groupInfo, item, 'NEW');
 }
 
-// Экспорт для тестов / ручного триггера
 export { checkAllGroups };
