@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { RobloxUserProfileFull, RobloxGroupMembership } from '../types/roblox';
 import { AssetCard } from './AssetCard';
 import { GroupCard } from './GroupCard';
@@ -28,8 +28,6 @@ import {
   ArrowUpWideNarrow,
   Award,
   RotateCcw,
-  HelpCircle,
-  ChevronDown,
 } from 'lucide-react';
 import { useCopiedGroupsFolder } from '../hooks/useCopiedGroupsFolder';
 import { CopiedGroupsFolder } from './CopiedGroupsFolder';
@@ -53,10 +51,6 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
   const [searchInput, setSearchInput] = useState('');
   const [copiedAction, setCopiedAction] = useState<string | null>(null);
   const [groupSort, setGroupSort] = useState<GroupSortOption>('default');
-  const [helpOpen, setHelpOpen] = useState(false);
-  const [helpLanguage, setHelpLanguage] = useState<'en' | 'ru'>(() => {
-    try { return navigator.language.toLowerCase().startsWith('ru') ? 'ru' : 'en'; } catch { return 'en'; }
-  });
 
   // Persistent copied groups memory (Set backed by localStorage) — SSR-safe + Folder
   const [copiedGroupIds, setCopiedGroupIds] = useState<Set<number>>(() => {
@@ -675,44 +669,6 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
               checking={folder.checking}
               updates={folder.updates}
             />
-
-            <div className="mt-3 rounded-xl border border-white/[0.07] bg-black/30 backdrop-blur-md text-white/70 overflow-hidden">
-              <button type="button" onClick={() => setHelpOpen(value => !value)} className="w-full px-4 py-3 text-xs font-mono flex items-center gap-2 hover:text-white transition-colors text-left">
-                <HelpCircle className="w-3.5 h-3.5 text-amber-300" />
-                <AnimatePresence mode="wait" initial={false}>
-                  <motion.span key={helpLanguage} initial={{ opacity: 0, y: 3 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={{ duration: 0.18, ease: 'easeOut' }}>
-                    {helpLanguage === 'ru' ? 'Уведомления о новых вещах' : 'Notifications about new items'}
-                  </motion.span>
-                </AnimatePresence>
-                <ChevronDown className={`ml-auto w-3.5 h-3.5 text-white/35 transition-transform duration-300 ${helpOpen ? 'rotate-180' : ''}`} />
-              </button>
-              <AnimatePresence initial={false}>
-              {helpOpen && <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}>
-              <div className="px-4 pb-4 pt-1 text-xs leading-5 text-white/55 border-t border-white/[0.06]">
-                <div className="flex justify-end -mt-1 mb-1">
-                <button type="button" onClick={() => setHelpLanguage(helpLanguage === 'ru' ? 'en' : 'ru')} className="text-[10px] text-white/45 hover:text-white/80 underline underline-offset-2" aria-label="Switch language">
-                  {helpLanguage === 'ru' ? 'EN' : 'RU'}
-                </button>
-                </div>
-                <AnimatePresence mode="wait" initial={false}>
-                <motion.div key={helpLanguage} initial={{ opacity: 0, y: 5, filter: 'blur(2px)' }} animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }} exit={{ opacity: 0, y: -5, filter: 'blur(2px)' }} transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}>
-                {helpLanguage === 'ru' ? <>
-                  <p>1. Нажми <strong className="text-white/80">Подключить Discord</strong> и подтверди доступ.</p>
-                  <p>2. Нажми <strong className="text-white/80">Copy</strong> у нужной группы.</p>
-                  <p>3. Бот отправит DM о новой вещи, продаже или изменении цены.</p>
-                  <p className="mt-2 text-white/40">В Discord: <code>/folder</code> — мои группы, <code>/untrack ID</code> — убрать группу, <code>/unlink</code> — отключить уведомления.</p>
-                </> : <>
-                  <p>1. Click <strong className="text-white/80">Connect Discord</strong> and authorize access.</p>
-                  <p>2. Click <strong className="text-white/80">Copy</strong> on a group you want to follow.</p>
-                  <p>3. The bot will DM you about new items, sales, or price changes.</p>
-                  <p className="mt-2 text-white/40">Discord: <code>/folder</code> — my groups, <code>/untrack ID</code> — remove a group, <code>/unlink</code> — disable notifications.</p>
-                </>}
-                </motion.div>
-                </AnimatePresence>
-              </div>
-              </motion.div>}
-              </AnimatePresence>
-            </div>
 
             {sortedGroups.length === 0 ? (
               <Card className="p-12 text-center border-dashed bg-black/40 backdrop-blur-md border-white/10">

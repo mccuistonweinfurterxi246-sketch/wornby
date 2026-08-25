@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Folder, FolderOpen, Trash2, Copy, Check, ExternalLink, Clock, Users, Sparkles, RefreshCw, ChevronDown, ChevronUp, Package, Award, Bot } from 'lucide-react';
+import { Folder, FolderOpen, Trash2, Copy, Check, ExternalLink, Clock, Users, Sparkles, RefreshCw, ChevronDown, ChevronUp, Package, Award } from 'lucide-react';
 import { CopiedGroupEntry } from '../hooks/useCopiedGroupsFolder';
 import { Tooltip, TooltipMono } from './ui/tooltip';
 import { toast } from 'sonner';
@@ -25,96 +25,8 @@ export const CopiedGroupsFolder: React.FC<{
 }> = ({ entries, currentGroupIds, currentGroupsById, onRemove, onClear, onCheckUpdates, checking, updates }) => {
   const [open, setOpen] = useState(true);
   const [copiedId, setCopiedId] = useState<number | null>(null);
-  const [language, setLanguage] = useState<'en' | 'ru'>(() => {
-    try { return navigator.language.toLowerCase().startsWith('ru') ? 'ru' : 'en'; } catch { return 'en'; }
-  });
-
-  const [discordLinked, setDiscordLinked] = useState<string | null>(null);
-
-  // Новый безопасный путь: cookie wornby_auth (HttpOnly) — токен НЕ в URL, не в localStorage XSS-доступен.
-  // При монтировании спрашиваем /api/auth/discord/me с credentials include (кука улетит).
-  // Легаси ?discord_token= в URL тоже поддерживаем для старых ссылок, но сразу чистим и мигрируем в куку (бек уже ставит куку).
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        // 1) чистим legacy токен из URL если вдруг старый бек прислал (утечка через history/referer)
-        try {
-          const url = new URL(window.location.href);
-          if (url.searchParams.has('discord_token')) {
-            url.searchParams.delete('discord_token');
-            url.searchParams.delete('roblox');
-            window.history.replaceState({}, '', url.toString());
-          }
-          if (url.searchParams.has('linked')) {
-            // новый бек редиректит ?linked=1 — тоже чистим чтобы не палить связь
-            url.searchParams.delete('linked');
-            url.searchParams.delete('roblox');
-            window.history.replaceState({}, '', url.toString());
-          }
-        } catch {}
-        // 2) спрашиваем бек по куке (HttpOnly, не палится в URL/referer)
-        const res = await fetch('/api/auth/discord/me', { credentials: 'include' }).then(r=>r.json()).catch(()=>null);
-        if (!cancelled) {
-          if (res?.linked) {
-            setDiscordLinked(res.robloxUsername || 'linked');
-            // мигрируем: стираем legacy токен из localStorage чтобы не светить в XSS
-            try { localStorage.removeItem('wornby_discord_token'); } catch {}
-          } else {
-            // после /unlink бек вернет linked:false — чистим UI и legacy токен
-            setDiscordLinked(null);
-            try { localStorage.removeItem('wornby_discord_token'); } catch {}
-          }
-          return;
-        }
-      } catch {
-        if (!cancelled) setDiscordLinked(null);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  // после линка — ресинк всех локальных групп bulk'ом через куку, иначе Discord /folder останется 0
-  useEffect(() => {
-    if (!discordLinked || entries.length === 0) return;
-    const ids = entries.map(e=>e.id);
-    const groups = entries.map(e=>({ id: e.id, name: e.name, memberCount: e.memberCount, iconUrl: e.iconUrl }));
-    fetch('/api/folder/sync-bulk', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include' as RequestCredentials,
-      body: JSON.stringify({ groupIds: ids, groups }),
-    }).catch(()=>{
-      // fallback per-entry
-      for (const e of entries) {
-        fetch('/api/folder/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include' as RequestCredentials,
-          body: JSON.stringify({ groupId: e.id, groupName: e.name, memberCount: e.memberCount, iconUrl: e.iconUrl }),
-        }).catch(()=>{});
-      }
-    });
-  }, [discordLinked, entries.length]);
 
   if (entries.length === 0) return null;
-
-  const handleLinkDiscord = async (changeAccount = false) => {
-    if (discordLinked && !changeAccount) return;
-    // 1-клик OAuth — теперь без обязательного поиска игрока, достаточно нажать кнопку
-    const lastRoblox = (()=>{ try { return localStorage.getItem('wornby_last_roblox_username') || ''; } catch { return ''; }})();
-    try {
-      const status = await fetch('/api/discord/status').then(r=>r.json()).catch(()=>null);
-      if (!status?.enabled) {
-        toast.error('Discord notifications are temporarily unavailable');
-        return;
-      }
-      const qs = lastRoblox ? `?roblox=${encodeURIComponent(lastRoblox)}` : '';
-      window.location.href = `/api/auth/discord${qs}`;
-    } catch {
-      toast.error('Could not connect to Discord. Try again.');
-    }
-  };
 
   const handleCopy = async (e: CopiedGroupEntry) => {
     try {
@@ -148,23 +60,6 @@ export const CopiedGroupsFolder: React.FC<{
           )}
         </div>
         <div className="flex items-center gap-1.5">
-          <Tooltip content={<TooltipMono label={discordLinked ? 'Discord connected' : 'Connect Discord'} hint={discordLinked ? 'DM notifications on' : 'Private notifications'} icon={<Bot className="w-3 h-3" />} />} side="top">
-            <span
-              role="button"
-              aria-disabled={discordLinked ? 'true' : 'false'}
-              onClick={(e)=>{ e.stopPropagation(); if (!discordLinked) handleLinkDiscord(); }}
-              className={`p-1.5 rounded-lg border flex items-center gap-1 transition-colors ${discordLinked ? 'bg-indigo-500/15 border-indigo-500/25 text-indigo-300 cursor-default' : 'bg-white/[0.04] hover:bg-white/[0.06] border-white/10 text-white/40 hover:text-white'}`}
-            >
-              <Bot className="w-3.5 h-3.5" /> <span className="hidden sm:inline text-xs font-mono">{discordLinked ? (language === 'ru' ? 'Discord подключён' : 'Discord connected') : (language === 'ru' ? 'Подключить Discord' : 'Connect Discord')}</span>
-            </span>
-          </Tooltip>
-          {discordLinked && (
-            <Tooltip content={<TooltipMono label={language === 'ru' ? 'Сменить Discord' : 'Change Discord'} hint={language === 'ru' ? 'группы сохранятся' : 'groups stay saved'} icon={<RefreshCw className="w-3 h-3" />} />} side="top">
-              <button type="button" onClick={(e)=>{ e.stopPropagation(); if (window.confirm(language === 'ru' ? 'Сменить Discord-аккаунт? Твои группы сохранятся.' : 'Change Discord account? Your groups will stay saved.')) handleLinkDiscord(true); }} className="px-2 py-1.5 rounded-lg border border-white/10 bg-white/[0.04] hover:bg-white/[0.08] text-[10px] font-mono text-white/45 hover:text-white transition-colors">
-                {language === 'ru' ? 'Сменить' : 'Change'}
-              </button>
-            </Tooltip>
-          )}
           <Tooltip content={<TooltipMono label="Check for new items" hint={`${entries.length} groups`} icon={<RefreshCw className="w-3 h-3" />} />} side="top">
             <span
               role="button"
@@ -188,29 +83,6 @@ export const CopiedGroupsFolder: React.FC<{
           </span>
         </div>
       </div>
-      <AnimatePresence initial={false}>
-      {!discordLinked && open && (
-        <motion.div initial={{ opacity: 0, height: 0, y: -4 }} animate={{ opacity: 1, height: 'auto', y: 0 }} exit={{ opacity: 0, height: 0, y: -4 }} transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }} className="mx-3 mb-2 px-2.5 py-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/15 text-indigo-200 text-[11px] font-mono flex items-center gap-1.5 overflow-hidden">
-          <Bot className="w-3 h-3 shrink-0" />
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.span key={language} initial={{ opacity: 0, y: 3 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={{ duration: 0.18, ease: 'easeOut' }}>
-              {language === 'ru' ? '1. Нажми «Подключить Discord» → 2. Скопируй группу ↓ — бот пришлёт DM.' : '1. Click Connect Discord → 2. Copy a group ↓ — bot will DM you.'}
-            </motion.span>
-          </AnimatePresence>
-          <button type="button" onClick={(e)=>{ e.stopPropagation(); setLanguage(language === 'ru' ? 'en' : 'ru'); }} className="ml-auto shrink-0 text-[10px] font-mono text-white/45 hover:text-white/80 underline underline-offset-2" aria-label="Switch language">
-            {language === 'ru' ? 'EN' : 'RU'}
-          </button>
-        </motion.div>
-      )}
-      </AnimatePresence>
-      <AnimatePresence initial={false}>
-      {discordLinked && open && (
-        <motion.div initial={{ opacity: 0, height: 0, y: -4 }} animate={{ opacity: 1, height: 'auto', y: 0 }} exit={{ opacity: 0, height: 0, y: -4 }} transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }} className="mx-3 mb-2 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/15 text-emerald-200 text-[11px] font-mono flex items-center gap-1.5 overflow-hidden">
-          <Sparkles className="w-3 h-3 shrink-0" />
-          <span>{entries.length === 0 ? (language === 'ru' ? 'Готово! Теперь скопируй группу ниже — бот будет слать DM о новых вещах, снятии и возврате.' : 'Done! Now copy a group below — bot will DM about new/off/back on sale.') : (language === 'ru' ? `Отслеживается ${entries.length} — бот уже следит, DM придёт при изменениях.` : `Tracking ${entries.length} — bot is watching, DM on changes.`)}</span>
-        </motion.div>
-      )}
-      </AnimatePresence>
 
       <AnimatePresence>
         {open && (
@@ -234,7 +106,7 @@ export const CopiedGroupsFolder: React.FC<{
                     key={e.id}
                     className={`group relative rounded-xl border p-3 flex flex-col gap-2.5 backdrop-blur-sm transition-all overflow-visible ${hasNew ? 'border-emerald-500/25 bg-emerald-950/10 shadow-[0_2px_12px_rgba(16,185,129,0.08)]' : hasGroup ? 'border-white/[0.07] bg-white/[0.02] hover:border-white/12 hover:bg-white/[0.04]' : 'border-amber-500/20 bg-amber-950/10 hover:border-amber-500/30'}`}
                   >
-                    {/* Top status badge — inside card, not clipped */}
+                    {/* Top status badge */}
                     <div className="absolute top-2.5 right-2.5 z-10">
                       {hasNew ? (
                         <span className="px-2 py-0.5 rounded-full bg-emerald-500 text-white text-[10px] font-mono font-bold tracking-wide shadow flex items-center gap-1">
@@ -273,7 +145,7 @@ export const CopiedGroupsFolder: React.FC<{
                       <span className="text-[11px] font-mono text-white/40 truncate flex-1">{e.roleName}</span>
                     </div>
 
-                    {/* Ownership status — formal English */}
+                    {/* Ownership status */}
                     <div className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-mono flex items-center gap-1.5 ${hasGroup ? 'bg-emerald-500/10 border-emerald-500/18 text-emerald-300' : 'bg-amber-500/10 border-amber-500/18 text-amber-200'}`}>
                       {hasGroup ? <><Check className="w-3.5 h-3.5" /> Owned by this player</> : <><Users className="w-3.5 h-3.5" /> Missing for this player</>}
                       {hasGroup && curRole && <span className="ml-auto text-white/35 truncate">· {curRole.roleName}</span>}
