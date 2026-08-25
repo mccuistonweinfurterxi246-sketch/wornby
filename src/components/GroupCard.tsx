@@ -4,7 +4,7 @@ import { RobloxGroupMembership } from '../types/roblox';
 import { TiltCard } from './TiltCard';
 import { Card, CardContent } from './ui/card';
 import { toast } from 'sonner';
-import { Shield, Users, Copy, Check, BadgeCheck } from 'lucide-react';
+import { Shield, Users, Copy, Check, BadgeCheck, Store } from 'lucide-react';
 import { AudioHaptics } from './AudioHaptics';
 import { FALLBACK_GROUP_SVG } from '../lib/fallbacks';
 import { Tooltip, TooltipMono } from './ui/tooltip';
@@ -14,6 +14,7 @@ interface GroupCardProps {
   index: number;
   isCopiedPersistent: boolean;
   onCopyGroup: (group: RobloxGroupMembership) => void;
+  onOpenStore?: (group: RobloxGroupMembership) => void;
 }
 
 export const GroupCard: React.FC<GroupCardProps> = ({
@@ -21,6 +22,7 @@ export const GroupCard: React.FC<GroupCardProps> = ({
   index,
   isCopiedPersistent,
   onCopyGroup,
+  onOpenStore,
 }) => {
   const [copiedRecently, setCopiedRecently] = useState(false);
 
@@ -140,30 +142,48 @@ export const GroupCard: React.FC<GroupCardProps> = ({
                 </Tooltip>
               </div>
 
-              {/* Right: Dimension-Locked Copy Name Button */}
-              <Tooltip content={<TooltipMono label={isCopied ? 'Copied' : 'Copy Name'} hint={group.name.slice(0,18)} icon={isCopied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />} />} side="top" align="end">
-                <button
-                  onClick={handleCopyName}
-                  aria-label="Copy Group Name"
-                  className={`shrink-0 w-[88px] h-7 rounded-lg text-xs font-mono transition-all duration-150 active:scale-95 flex items-center justify-center gap-1.5 ${
-                    isCopied
-                      ? 'bg-emerald-950/40 text-emerald-400 border border-emerald-500/30 font-semibold shadow-sm'
-                      : 'bg-white/[0.04] hover:bg-white/[0.08] text-white/70 hover:text-white border border-white/[0.06]'
-                  }`}
-                >
-                {isCopied ? (
-                  <>
-                    <Check className="w-3 h-3 text-emerald-400 shrink-0" />
-                    <span>COPIED</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-3 h-3 text-white/40 shrink-0" />
-                    <span>Copy Name</span>
-                  </>
+              {/* Right: Actions Group (Store Button + Copy Name Button) */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                {onOpenStore && (
+                  <Tooltip content={<TooltipMono label="Browse Store" hint={`${group.name.slice(0, 16)}...`} icon={<Store className="w-3 h-3 text-cyan-400" />} />} side="top">
+                    <button
+                      onClick={() => {
+                        AudioHaptics.playHoverTick();
+                        onOpenStore(group);
+                      }}
+                      aria-label="Browse Group Store"
+                      className="px-2.5 h-7 rounded-lg text-xs font-mono bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/25 transition-all duration-150 active:scale-95 flex items-center justify-center gap-1 font-medium shadow-sm"
+                    >
+                      <Store className="w-3 h-3 text-cyan-400" />
+                      <span>Store</span>
+                    </button>
+                  </Tooltip>
                 )}
-              </button>
-              </Tooltip>
+
+                <Tooltip content={<TooltipMono label={isCopied ? 'Copied' : 'Copy Name'} hint={group.name.slice(0,18)} icon={isCopied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />} />} side="top" align="end">
+                  <button
+                    onClick={handleCopyName}
+                    aria-label="Copy Group Name"
+                    className={`shrink-0 w-[84px] h-7 rounded-lg text-xs font-mono transition-all duration-150 active:scale-95 flex items-center justify-center gap-1.5 ${
+                      isCopied
+                        ? 'bg-emerald-950/40 text-emerald-400 border border-emerald-500/30 font-semibold shadow-sm'
+                        : 'bg-white/[0.04] hover:bg-white/[0.08] text-white/70 hover:text-white border border-white/[0.06]'
+                    }`}
+                  >
+                    {isCopied ? (
+                      <>
+                        <Check className="w-3 h-3 text-emerald-400 shrink-0" />
+                        <span>COPIED</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3 h-3 text-white/40 shrink-0" />
+                        <span>Copy Name</span>
+                      </>
+                    )}
+                  </button>
+                </Tooltip>
+              </div>
             </div>
           </CardContent>
         </Card>

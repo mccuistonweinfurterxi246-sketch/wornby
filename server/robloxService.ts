@@ -47,6 +47,10 @@ const priceVectorCache = new LRUCache<number, Pick<RobloxAssetItem,'price'|'lowe
 const metaCache = new LRUCache<number, Pick<RobloxAssetItem,'name'|'description'|'assetType'|'assetTypeName'|'creatorName'|'creatorId'|'creatorType'|'itemRestrictions'>>({
   max: 4000, ttl: 1000 * 60 * 5, // 5 min — meta may change
 });
+const groupStoreCache = new LRUCache<string, { items: RobloxAssetItem[]; nextPageCursor: string | null }>({
+  max: 300,
+  ttl: 1000 * 60 * 5, // 5 min cache
+});
 
 // ── 4️⃣ ETag caches for conditional GET (304) ────────────────────────
 const thumbEtagCache = new LRUCache<number, { etag: string; url: string }>({ max: 3000, ttl: 1000 * 60 * 10 });
@@ -128,7 +132,8 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
       const isTimeout = msg.includes('timeout') || msg.includes('timed out') || msg.includes('abort');
       const isRetryable = status === 429 || status === 408 || (status != null && status >= 500 && status < 600) || e.code === 'ECONNRESET' || e.code === 'ETIMEDOUT' || e.code === 'ECONNABORTED' || isTimeout;
       if (!isRetryable || attempt >= retries) throw err;
-      const backoff = 300 * Math.pow(2, attempt) + Math.random() * 250;
+      const baseDelay = status === 429 ? 1200 : 300;
+      const backoff = baseDelay * Math.pow(2, attempt) + Math.random() * 300;
       await new Promise(r=>setTimeout(r, backoff));
       attempt++;
     }
@@ -151,6 +156,23 @@ async function hedged<T>(primary: () => Promise<T>, fallback: () => Promise<T>, 
     if (fallbackTimer) clearTimeout(fallbackTimer);
     // если primary упал, ждём fallback
     return fallback();
+  }
+}
+
+let globalCsrfToken = '';
+async function postWithCsrf(client: AxiosInstance, url: string, data: any, config: any = {}) {
+  const headers = { ...(config.headers || {}) };
+  if (globalCsrfToken) headers['x-csrf-token'] = globalCsrfToken;
+
+  try {
+    return await client.post(url, data, { ...config, headers });
+  } catch (err: any) {
+    if (err.response?.status === 403 && err.response?.headers?.['x-csrf-token']) {
+      globalCsrfToken = err.response.headers['x-csrf-token'];
+      headers['x-csrf-token'] = globalCsrfToken;
+      return await client.post(url, data, { ...config, headers });
+    }
+    throw err;
   }
 }
 
@@ -248,7 +270,12 @@ export class RobloxService {
           const headers: Record<string,string> = {};
           if (etags.length===chunk.length && etags.length>0) headers['If-None-Match']= etags.join(', ');
           try {
-            const res = await withRetry(()=> client.get(`https://thumbnails.roblox.com/v1/assets?assetIds=${chunk.join(',')}&size=420x420&format=Png`, { timeout: THUMB_TIMEOUT, signal, headers: Object.keys(headers).length?headers:undefined }));
+            let res;
+            try {
+              res = await withRetry(()=> client.get(`https://thumbnails.roblox.com/v1/assets?assetIds=${chunk.join(',')}&size=420x420&format=Png`, { timeout: THUMB_TIMEOUT, signal, headers: Object.keys(headers).length?headers:undefined }), 1);
+            } catch {
+              res = await withRetry(()=> client.get(`https://thumbnails.roproxy.com/v1/assets?assetIds=${chunk.join(',')}&size=420x420&format=Png`, { timeout: THUMB_TIMEOUT, signal }), 2);
+            }
             // 304 -> use cached
             if (res.status===304) { for (const id of chunk){ const c=thumbEtagCache.get(id); if(c) map[id]=c.url; } return; }
             const etag = (res.headers?.etag || res.headers?.ETag || '') as string;
@@ -288,7 +315,12 @@ export class RobloxService {
       return cached;
     }
     const doFetch = async (client: AxiosInstance) => {
-      const res = await withRetry(()=> client.get(`https://economy.roblox.com/v2/assets/${assetId}/details`, { timeout: ECONOMY_TIMEOUT, signal }));
+      let res;
+      try {
+        res = await withRetry(()=> client.get(`https://economy.roblox.com/v2/assets/${assetId}/details`, { timeout: ECONOMY_TIMEOUT, signal }), 1);
+      } catch {
+        res = await withRetry(()=> client.get(`https://economy.roproxy.com/v2/assets/${assetId}/details`, { timeout: ECONOMY_TIMEOUT, signal }), 2);
+      }
       if(!res.data || !res.data.Name) return null;
       const data=res.data;
       const price = typeof data.PriceInRobux==='number'?data.PriceInRobux:null;
@@ -410,12 +442,14 @@ export class RobloxService {
       else if (rawPrice!=null && rawPrice>0) effectivePrice=rawPrice;
       else if (hasResale) effectivePrice=resalePrice as number;
       else if (rawPrice!=null) effectivePrice=rawPrice; // может быть null
-      // ForSale: если есть хоть какая-то положительная цена (включая ресейл) или Free
-      const isForSale = isFree || (effectivePrice!=null && effectivePrice>0);
-      const isOffSale = !isForSale && !isFree;
+      // ForSale & OffSale: если priceStatus explicitly 'Off Sale'/'OffSale' или цена <= 1 (артефакт снятых с продажи вещей), помечаем как Off-Sale
+      const isPriceOneOrInvalid = typeof effectivePrice === 'number' && effectivePrice <= 1 && !isFree && !hasResale;
+      const isExplicitOffSale = ((priceStatus === 'Off Sale' || priceStatus === 'OffSale') && !hasResale) || isPriceOneOrInvalid;
+      const isForSale = !isExplicitOffSale && (isFree || (effectivePrice != null && effectivePrice > 1));
+      const isOffSale = isExplicitOffSale || (!isForSale && !isFree);
       // priceStatus для ресейла нормализуем — если был OffSale но есть ресейл, считаем Resale
-      const normalizedStatus = hasResale && priceStatus==='OffSale' ? 'Resale' : priceStatus;
-      return { id:Number(item.id), name:item.name||`${fallback} #${item.id}`, description:item.description||'', assetType:item.assetType, assetTypeName:item.assetType?(ASSET_TYPE_MAP[item.assetType]||`Type ${item.assetType}`):fallback, creatorName:item.creatorName||'Roblox User / UGC', creatorId:item.creatorTargetId, creatorType:item.creatorType, price:effectivePrice, priceStatus:normalizedStatus||item.priceStatus, lowestPrice:resalePrice ?? null, isForSale, isOffSale, isFree, isDeletedOrModerated:false, itemRestrictions:item.itemRestrictions||[] };
+      const normalizedStatus = hasResale && (priceStatus === 'OffSale' || priceStatus === 'Off Sale') ? 'Resale' : (isOffSale ? 'Off Sale' : priceStatus);
+      return { id:Number(item.id), name:item.name||`${fallback} #${item.id}`, description:item.description||'', assetType:item.assetType, assetTypeName:item.assetType?(ASSET_TYPE_MAP[item.assetType]||`Type ${item.assetType}`):fallback, creatorName:item.creatorName||'Roblox User / UGC', creatorId:item.creatorTargetId, creatorType:item.creatorType, price:isOffSale ? null : effectivePrice, priceStatus:normalizedStatus||item.priceStatus, lowestPrice:resalePrice ?? null, isForSale, isOffSale, isFree, isDeletedOrModerated:false, itemRestrictions:item.itemRestrictions||[] };
     };
 
     const storeQuantized = (parsed: Partial<RobloxAssetItem>)=>{
@@ -437,7 +471,12 @@ export class RobloxService {
       for (const chunk of chunks30){
         allTasks.push((async()=>{
           try{
-            const res=await withRetry(()=> client.post('https://catalog.roblox.com/v1/catalog/items/details', {items: chunk.map(id=>({itemType:1,id}))}, {timeout: CATALOG_TIMEOUT, signal}));
+            let res;
+            try {
+              res = await withRetry(() => postWithCsrf(client, 'https://catalog.roblox.com/v1/catalog/items/details', { items: chunk.map(id=>({itemType:1,id})) }, { timeout: CATALOG_TIMEOUT, signal }), 1);
+            } catch {
+              res = await withRetry(() => postWithCsrf(client, 'https://catalog.roproxy.com/v1/catalog/items/details', { items: chunk.map(id=>({itemType:1,id})) }, { timeout: CATALOG_TIMEOUT, signal }), 2);
+            }
             if(res.data?.data) for(const it of res.data.data){
               const parsed=parseCatalogItem(it,'Accessory / Wearable');
               if(!detailsMap.has(parsed.id as number)){ detailsMap.set(parsed.id as number, parsed); storeQuantized(parsed); emit(new Map([[parsed.id as number, parsed]])); }
@@ -446,7 +485,12 @@ export class RobloxService {
         })());
         allTasks.push((async()=>{
           try{
-            const res=await withRetry(()=> client.post('https://catalog.roblox.com/v1/catalog/items/details', {items: chunk.map(id=>({itemType:2,id}))}, {timeout: CATALOG_TIMEOUT, signal}));
+            let res;
+            try {
+              res = await withRetry(() => postWithCsrf(client, 'https://catalog.roblox.com/v1/catalog/items/details', { items: chunk.map(id=>({itemType:2,id})) }, { timeout: CATALOG_TIMEOUT, signal }), 1);
+            } catch {
+              res = await withRetry(() => postWithCsrf(client, 'https://catalog.roproxy.com/v1/catalog/items/details', { items: chunk.map(id=>({itemType:2,id})) }, { timeout: CATALOG_TIMEOUT, signal }), 2);
+            }
             if(res.data?.data) for(const it of res.data.data){
               const parsed=parseCatalogItem(it,'Avatar Bundle / Pack'); parsed.assetTypeName='Avatar Bundle / Pack';
               if(!detailsMap.has(parsed.id as number)){ detailsMap.set(parsed.id as number, parsed); storeQuantized(parsed); emit(new Map([[parsed.id as number, parsed]])); }
@@ -513,7 +557,12 @@ export class RobloxService {
     const cached = this.groupInfoCache.get(groupId);
     if (cached && Date.now() < cached.expiresAt) return cached.data;
     try {
-      const res = await withRetry(()=> robloxAxios.get(`https://groups.roblox.com/v1/groups/${groupId}`, { timeout:6000, signal }));
+      let res;
+      try {
+        res = await withRetry(()=> robloxAxios.get(`https://groups.roblox.com/v1/groups/${groupId}`, { timeout:6000, signal }), 1);
+      } catch {
+        res = await withRetry(()=> robloxAxios.get(`https://groups.roproxy.com/v1/groups/${groupId}`, { timeout:6000, signal }), 2);
+      }
       if (!res.data?.id) return null;
       const data = { id: res.data.id, name: res.data.name, memberCount: res.data.memberCount ?? 0, description: res.data.description, owner: res.data.owner, created: res.data.created, updated: res.data.updated };
       this.groupInfoCache.set(groupId, { data, expiresAt: Date.now() + 30 * 60 * 1000 }); // 30 min cache
@@ -541,7 +590,8 @@ export class RobloxService {
         created: it.created,
         updated: it.updated,
       })).filter((x: { id:number })=> x.id>0).slice(0, limit);
-      const detailTasks = items.map(item => async () => {
+      // Resolve genuine names & prices for items
+      const detailTasks = items.map((item) => async () => {
         const details = await RobloxService.getEconomyAssetDetails(item.id, undefined, true);
         if (!details) return;
         if (details.name) item.name = details.name;
@@ -552,6 +602,196 @@ export class RobloxService {
       return { items };
     } catch {
       return { items: [] };
+    }
+  }
+
+  public static async getGroupStore(
+    groupId: number,
+    cursor = '',
+    limit = 100,
+    sortType: 'RecentlyCreated' | 'PriceAsc' | 'PriceDesc' | 'Relevance' = 'RecentlyCreated',
+    sortOrder: 'Asc' | 'Desc' = 'Desc',
+    signal?: AbortSignal
+  ): Promise<{ items: RobloxAssetItem[]; nextPageCursor: string | null }> {
+    const cacheKey = `store:${groupId}:${cursor}:${limit}:${sortType}:${sortOrder}`;
+    const cached = groupStoreCache.get(cacheKey);
+    if (cached) return cached;
+
+    try {
+      const client = egressForAsset(groupId);
+      const ALLOWED_LIMITS = [10, 28, 30, 50, 60, 100, 120];
+      const safeLimit = ALLOWED_LIMITS.find(l => l >= limit) || 100;
+
+      let groupName = `Group #${groupId}`;
+      try {
+        const info = await this.getGroupInfo(groupId, signal);
+        if (info?.name) groupName = info.name;
+      } catch {}
+
+      // Try search with details endpoint first (returns all authentic metadata in 1 single GET request)
+      let res;
+      let isDetailedSearch = false;
+      try {
+        res = await withRetry(() =>
+          client.get(`https://catalog.roblox.com/v1/search/items/details`, {
+            params: {
+              category: 'All',
+              creatorTargetId: groupId,
+              creatorType: 2,
+              limit: safeLimit,
+              cursor: cursor || undefined,
+              sortType,
+              sortOrder,
+              includeNotForSale: true,
+            },
+            timeout: CATALOG_TIMEOUT,
+            signal,
+          }),
+          1
+        );
+        if (res.data?.data && res.data.data.length > 0 && res.data.data[0].name) {
+          isDetailedSearch = true;
+        }
+      } catch {
+        try {
+          res = await withRetry(() =>
+            client.get(`https://catalog.roproxy.com/v1/search/items/details`, {
+              params: {
+                category: 'All',
+                creatorTargetId: groupId,
+                creatorType: 2,
+                limit: safeLimit,
+                cursor: cursor || undefined,
+                sortType,
+                sortOrder,
+                includeNotForSale: true,
+              },
+              timeout: CATALOG_TIMEOUT,
+              signal,
+            }),
+            2
+          );
+          if (res.data?.data && res.data.data.length > 0 && res.data.data[0].name) {
+            isDetailedSearch = true;
+          }
+        } catch {
+          try {
+            res = await withRetry(() =>
+              client.get(`https://catalog.roblox.com/v1/search/items`, {
+                params: {
+                  category: 'All',
+                  creatorTargetId: groupId,
+                  creatorType: 2,
+                  limit: safeLimit,
+                  cursor: cursor || undefined,
+                  sortType,
+                  sortOrder,
+                  includeNotForSale: true,
+                },
+                timeout: CATALOG_TIMEOUT,
+                signal,
+              }),
+              1
+            );
+          } catch {
+            res = await withRetry(() =>
+              client.get(`https://catalog.roproxy.com/v1/search/items`, {
+                params: {
+                  category: 'All',
+                  creatorTargetId: groupId,
+                  creatorType: 2,
+                  limit: safeLimit,
+                  cursor: cursor || undefined,
+                  sortType,
+                  sortOrder,
+                  includeNotForSale: true,
+                },
+                timeout: CATALOG_TIMEOUT,
+                signal,
+              }),
+              2
+            );
+          }
+        }
+      }
+
+      const rawItems = res.data?.data ?? res.data?.items ?? [];
+      const nextPageCursor = res.data?.nextPageCursor ?? null;
+
+      if (!Array.isArray(rawItems) || rawItems.length === 0) {
+        return { items: [], nextPageCursor: null };
+      }
+
+      const assetIds: number[] = [];
+      for (const it of rawItems) {
+        const id = Number(it.id ?? it.itemId ?? 0);
+        if (id > 0) assetIds.push(id);
+      }
+
+      if (assetIds.length === 0) {
+        return { items: [], nextPageCursor: null };
+      }
+
+      const needsDetails = !isDetailedSearch || !rawItems[0]?.name;
+
+      // Fetch thumbnails and fallback catalog details in parallel
+      const [thumbMap, detailsMap] = await Promise.all([
+        this.getAssetThumbnails(assetIds, signal).catch(() => ({} as Record<number, string>)),
+        needsDetails
+          ? this.getCatalogDetails(assetIds, signal).catch(() => new Map<number, Partial<RobloxAssetItem>>())
+          : Promise.resolve(new Map<number, Partial<RobloxAssetItem>>()),
+      ]);
+
+      const items: RobloxAssetItem[] = rawItems.map((raw: any) => {
+        const id = Number(raw.id ?? raw.itemId ?? 0);
+        const d = detailsMap.get(id);
+
+        const rawName = raw.name || raw.title || d?.name;
+        const name = (rawName && !rawName.startsWith(ARCHIVED_PREFIX)) ? rawName : `Item #${id}`;
+
+        const rawPrice = (typeof raw.price === 'number') ? raw.price : (typeof d?.price === 'number' ? d.price : null);
+        const priceStatus = raw.priceStatus || d?.priceStatus || '';
+        const isFree = rawPrice === 0 || priceStatus === 'Free' || !!d?.isFree;
+        
+        // In Roblox clothing (Shirts/Pants), 1 Robux is an off-sale legacy artifact. Minimum active price is 5 R$ (or 2 R$ for T-Shirts).
+        const isPriceOneOrInvalid = typeof rawPrice === 'number' && rawPrice <= 1 && !isFree;
+        const isExplicitOffSale = priceStatus === 'Off Sale' || priceStatus === 'OffSale' || raw.isOffSale === true || raw.isForSale === false || d?.isOffSale === true || isPriceOneOrInvalid || (rawPrice === null && !isFree);
+        const isForSale = !isExplicitOffSale && (isFree || (typeof rawPrice === 'number' && rawPrice > 1));
+        const isOffSale = isExplicitOffSale || (!isForSale && !isFree);
+
+        const rawType = raw.assetType || d?.assetType;
+        const assetTypeId = typeof rawType === 'number' ? rawType : (typeof rawType === 'string' ? parseInt(rawType, 10) : undefined);
+        const typeName = d?.assetTypeName || (typeof assetTypeId === 'number' && Number.isFinite(assetTypeId) ? (ASSET_TYPE_MAP[assetTypeId] || `Type ${assetTypeId}`) : 'Wearable');
+
+        return {
+          id,
+          name,
+          description: raw.description || d?.description || '',
+          price: isOffSale ? null : (isFree ? 0 : rawPrice),
+          lowestPrice: isOffSale ? null : (raw.lowestPrice ?? d?.lowestPrice ?? rawPrice),
+          priceStatus: isOffSale ? 'Off Sale' : priceStatus,
+          isForSale,
+          isOffSale,
+          isFree,
+          isDeletedOrModerated: !!d?.isDeletedOrModerated,
+          creatorName: raw.creatorName || d?.creatorName || groupName,
+          creatorId: raw.creatorTargetId || d?.creatorId || groupId,
+          creatorType: 'Group',
+          assetType: assetTypeId,
+          assetTypeName: typeName,
+          itemRestrictions: raw.itemRestrictions || d?.itemRestrictions || [],
+          thumbnailUrl: thumbMap[id] || null,
+          studioLuaCommand: `game:GetService("InsertService"):LoadAsset(${id}).Parent = workspace`,
+          catalogUrl: `https://www.roblox.com/catalog/${id}`,
+        };
+      });
+
+      const result = { items, nextPageCursor };
+      groupStoreCache.set(cacheKey, result);
+      return result;
+    } catch (e) {
+      console.warn('[RobloxService] getGroupStore error:', (e as Error).message);
+      throw e;
     }
   }
 

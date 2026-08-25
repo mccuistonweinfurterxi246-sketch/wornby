@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Folder, FolderOpen, Trash2, Copy, Check, ExternalLink, Clock, Users, Sparkles, RefreshCw, ChevronDown, ChevronUp, Package, Award } from 'lucide-react';
+import { Folder, FolderOpen, Trash2, Copy, Check, ExternalLink, Clock, Users, Sparkles, RefreshCw, ChevronDown, ChevronUp, Package, Award, Store } from 'lucide-react';
 import { CopiedGroupEntry } from '../hooks/useCopiedGroupsFolder';
 import { Tooltip, TooltipMono } from './ui/tooltip';
 import { toast } from 'sonner';
@@ -22,7 +22,8 @@ export const CopiedGroupsFolder: React.FC<{
   onCheckUpdates: () => void;
   checking: boolean;
   updates: Record<number, { memberDelta: number; hasNewItem?: boolean; latestItemName?: string }>;
-}> = ({ entries, currentGroupIds, currentGroupsById, onRemove, onClear, onCheckUpdates, checking, updates }) => {
+  onOpenStore?: (group: { id: number; name: string; memberCount: number; iconUrl: string | null }) => void;
+}> = ({ entries, currentGroupIds, currentGroupsById, onRemove, onClear, onCheckUpdates, checking, updates, onOpenStore }) => {
   const [open, setOpen] = useState(true);
   const [copiedId, setCopiedId] = useState<number | null>(null);
 
@@ -162,6 +163,17 @@ export const CopiedGroupsFolder: React.FC<{
                     </div>
 
                     <div className="flex items-center gap-1.5 pt-1 border-t border-white/[0.06]">
+                      {onOpenStore && (
+                        <Tooltip content={<TooltipMono label="Browse Store" hint={e.name.slice(0, 16)} icon={<Store className="w-3 h-3 text-cyan-400" />} />}>
+                          <button
+                            onClick={() => onOpenStore({ id: e.id, name: e.name, memberCount: e.memberCount, iconUrl: e.iconUrl })}
+                            className="px-2 py-1.5 rounded-lg text-xs font-mono font-medium bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/20 flex items-center justify-center gap-1 transition-colors"
+                          >
+                            <Store className="w-3 h-3 text-cyan-400" />
+                            <span>Store</span>
+                          </button>
+                        </Tooltip>
+                      )}
                       <Tooltip content={<TooltipMono label={isCopied ? 'Copied' : 'Copy name'} hint={e.name.slice(0,20)} />}>
                         <button
                           onClick={()=>handleCopy(e)}

@@ -628,6 +628,33 @@ app.get('/api/group/:id/new-items', async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Failed to fetch new items' });
   }
 });
+app.get('/api/group/:id/store', async (req: Request, res: Response) => {
+  const raw = req.params.id?.trim();
+  const gid = Number(raw);
+  if (!Number.isFinite(gid) || gid <= 0 || !Number.isInteger(gid)) {
+    res.status(400).json({ error: 'Invalid group id' });
+    return;
+  }
+  const cursor = typeof req.query.cursor === 'string' ? req.query.cursor.trim() : '';
+  const parsedLimit = parseInt(String(req.query.limit || '100'), 10) || 100;
+  const limit = Math.min(Math.max(parsedLimit, 10), 120);
+  const sortType = (['RecentlyCreated', 'PriceAsc', 'PriceDesc', 'Relevance'].includes(String(req.query.sortType))
+    ? req.query.sortType
+    : 'RecentlyCreated') as 'RecentlyCreated' | 'PriceAsc' | 'PriceDesc' | 'Relevance';
+  const sortOrder = (String(req.query.sortOrder).toLowerCase() === 'asc' ? 'Asc' : 'Desc') as 'Asc' | 'Desc';
+
+  try {
+    const ac = new AbortController();
+    req.on('close', () => ac.abort());
+    const data = await RobloxService.getGroupStore(gid, cursor, limit, sortType, sortOrder, ac.signal);
+    res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=180');
+    res.json(data);
+  } catch (e) {
+    const err = e as Error;
+    if (err.name === 'AbortError') return;
+    res.status(500).json({ error: 'Failed to fetch group store' });
+  }
+});
 
 if (!process.env.VERCEL) {
   app.listen(PORT, () => {

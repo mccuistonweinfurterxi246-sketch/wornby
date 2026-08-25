@@ -43,20 +43,24 @@ export const QuickCopyStation: React.FC<QuickCopyStationProps> = ({
 
   if (variant === 'compact') {
     return (
-      <div className="flex items-center gap-1.5 pt-2 mt-auto border-t border-white/[0.06]">
+      <div className="flex items-center gap-1 pt-1.5 mt-auto border-t border-white/[0.06] w-full min-w-0">
         {/* Asset ID Quick-Copy */}
         <Tooltip content={<TooltipMono label="Copy ID" hint={`#${assetId}`} icon={<Hash className="w-3 h-3" />} />} side="top">
           <button
             onClick={() => copyToClipboard(String(assetId), 'id')}
             aria-label="Copy Numeric Asset ID"
-            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-mono transition-all duration-200 ${
+            className={`flex-1 min-w-0 flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg text-[11px] font-mono leading-none transition-all duration-200 ${
               copiedType === 'id'
-                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 haptic-active'
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 haptic-active font-semibold'
                 : 'bg-white/[0.04] hover:bg-white/[0.08] text-white/80 hover:text-white border border-white/[0.05]'
             }`}
           >
-            {copiedType === 'id' ? <Check className="w-3.5 h-3.5 stroke-[1.75]" /> : <Hash className="w-3.5 h-3.5 stroke-[1.75] text-white/40" />}
-            <span className="truncate">{copiedType === 'id' ? 'COPIED ID' : assetId}</span>
+            {copiedType === 'id' ? (
+              <Check className="w-3 h-3 stroke-[2] text-emerald-400 shrink-0" />
+            ) : (
+              <Hash className="w-3 h-3 stroke-[1.75] text-white/40 shrink-0" />
+            )}
+            <span className="truncate">{copiedType === 'id' ? 'COPIED' : assetId}</span>
           </button>
         </Tooltip>
 
@@ -65,13 +69,13 @@ export const QuickCopyStation: React.FC<QuickCopyStationProps> = ({
           <button
             onClick={() => copyToClipboard(studioLuaCommand, 'lua')}
             aria-label="Copy Studio Lua Insert Command"
-            className={`p-1.5 rounded-lg text-xs transition-all duration-200 flex items-center justify-center ${
+            className={`w-7 h-7 shrink-0 rounded-lg text-xs transition-all duration-200 flex items-center justify-center ${
               copiedType === 'lua'
                 ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 haptic-active'
                 : 'bg-white/[0.04] hover:bg-white/[0.08] text-white/70 hover:text-white border border-white/[0.05]'
             }`}
           >
-            {copiedType === 'lua' ? <Check className="w-3.5 h-3.5 stroke-[1.75]" /> : <Code2 className="w-3.5 h-3.5 stroke-[1.75]" />}
+            {copiedType === 'lua' ? <Check className="w-3 h-3 stroke-[2] text-cyan-400" /> : <Code2 className="w-3 h-3 stroke-[1.75]" />}
           </button>
         </Tooltip>
 
@@ -93,9 +97,9 @@ export const QuickCopyStation: React.FC<QuickCopyStationProps> = ({
             target="_blank"
             rel="noopener noreferrer"
             aria-label={`Open "${assetName}" in Roblox Catalog`}
-            className="group p-1.5 rounded-lg text-xs bg-white/[0.04] hover:bg-white/[0.08] text-white/70 hover:text-white border border-white/[0.05] hover:border-white/10 transition-all duration-200 flex items-center justify-center gap-1"
+            className="group w-7 h-7 shrink-0 rounded-lg text-xs bg-white/[0.04] hover:bg-white/[0.08] text-white/70 hover:text-white border border-white/[0.05] hover:border-white/10 transition-all duration-200 flex items-center justify-center"
           >
-            <ExternalLink className="w-3.5 h-3.5 stroke-[1.75] group-hover:translate-x-[1px] group-hover:-translate-y-[1px] transition-transform" />
+            <ExternalLink className="w-3 h-3 stroke-[1.75] group-hover:translate-x-[0.5px] group-hover:-translate-y-[0.5px] transition-transform" />
           </a>
         </Tooltip>
       </div>

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { RobloxUserProfileFull } from '../types/roblox';
+import { RobloxUserProfileFull, RobloxAssetItem } from '../types/roblox';
 
 const API_BASE = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') || '/api';
 
@@ -117,5 +117,32 @@ export class RobloxApiClient {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Fetch group store / catalog items with pagination, filters and sorting
+   */
+  public static async fetchGroupStore(
+    groupId: number,
+    cursor = '',
+    limit = 100,
+    sortType: 'RecentlyCreated' | 'PriceAsc' | 'PriceDesc' | 'Relevance' = 'RecentlyCreated',
+    sortOrder: 'Asc' | 'Desc' = 'Desc',
+    signal?: AbortSignal
+  ): Promise<{ items: RobloxAssetItem[]; nextPageCursor: string | null }> {
+    const response = await axios.get<{ items: RobloxAssetItem[]; nextPageCursor: string | null }>(
+      `${API_BASE}/group/${groupId}/store`,
+      {
+        params: {
+          cursor: cursor || undefined,
+          limit,
+          sortType,
+          sortOrder,
+        },
+        timeout: 15000,
+        signal,
+      }
+    );
+    return response.data;
   }
 }
