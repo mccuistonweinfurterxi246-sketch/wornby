@@ -16,7 +16,7 @@ type Store = {
 const DATA_DIR = path.join(process.cwd(), 'server', 'data');
 const DATA_FILE = path.join(DATA_DIR, 'folderSync.json');
 const REDIS_KEY = 'wornby:folderSync';
-const REDIS_URL = process.env.REDIS_URL || process.env.STORAGE_URL || process.env.STORAGE_REDIS_URL || process.env.KV_URL || process.env.KV_REDIS_URL || (process.env.KV_REST_API_URL ? 'kv_rest' : '') || '';
+const REDIS_URL = process.env.REDIS_URL || process.env.STORAGE_URL || process.env.STORAGE_REDIS_URL || process.env.KV_URL || process.env.KV_REDIS_URL || process.env.REDIS_PRIVATE_URL || process.env.REDIS_TLS_URL || (process.env.KV_REST_API_URL ? 'kv_rest' : '') || '';
 
 function ensureDir() {
   try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
@@ -61,7 +61,7 @@ function cloneStore(s: Store): Store {
   return JSON.parse(JSON.stringify(s));
 }
 
-// ── Redis lazy client (only on Vercel / when REDIS_URL set) ───────────────
+// ── Redis lazy client (only on Vercel / Railway / when REDIS_URL set) ───────────────
 let redisClient: any = null;
 let redisReady: Promise<any> | null = null;
 async function getRedis(): Promise<any | null> {
@@ -87,13 +87,22 @@ async function getRedis(): Promise<any | null> {
 let store: Store | null = REDIS_URL ? null : loadFromFile();
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let loaded = !REDIS_URL;
+let lastRedisFetch = 0;
+const REDIS_CACHE_TTL_MS = 5000; // Кэш в памяти на 5 сек — гарантирует, что бот на Railway видит новые группы с сайта без рестарта
 
 if (!REDIS_URL && process.env.VERCEL) {
   console.warn('[folderStore] REDIS_URL/STORAGE_URL not set on VERCEL — file storage is ephemeral, tracked groups will be lost after each deploy/lambda restart. Set Upstash Redis URL to fix.');
 }
 
 async function ensureLoaded(): Promise<Store> {
-  if (store && loaded) return store;
+  // Для локального режима без Redis
+  if (!REDIS_URL && store && loaded) return store;
+
+  // Если Redis есть и кэш еще свежий (< 5 сек)
+  if (REDIS_URL && store && loaded && (Date.now() - lastRedisFetch < REDIS_CACHE_TTL_MS)) {
+    return store;
+  }
+
   if (REDIS_URL) {
     try {
       const redis = await getRedis();
@@ -110,13 +119,17 @@ async function ensureLoaded(): Promise<Store> {
             groupRoblox: parsed.groupRoblox || {},
           };
           loaded = true;
+          lastRedisFetch = Date.now();
           return store!;
         }
       }
-    } catch {}
+    } catch (e) {
+      console.warn('[folderStore] redis read error', (e as Error).message);
+    }
     // fallback to file if redis empty/error
-    store = loadFromFile();
+    if (!store) store = loadFromFile();
     loaded = true;
+    lastRedisFetch = Date.now();
     // prime redis from file if had data
     if (store && Object.keys(store.tracked).length > 0) {
       try { const r = await getRedis(); if (r) await r.set(REDIS_KEY, JSON.stringify(store)); } catch {}
@@ -139,6 +152,7 @@ function saveToFileImmediate(s: Store) {
 
 async function saveImmediate(): Promise<void> {
   if (!store) return;
+  lastRedisFetch = Date.now();
   if (REDIS_URL) {
     try {
       const redis = await getRedis();
@@ -146,7 +160,9 @@ async function saveImmediate(): Promise<void> {
         await redis.set(REDIS_KEY, JSON.stringify(store));
         return;
       }
-    } catch {}
+    } catch (e) {
+      console.warn('[folderStore] redis save error', (e as Error).message);
+    }
   }
   saveToFileImmediate(store);
 }

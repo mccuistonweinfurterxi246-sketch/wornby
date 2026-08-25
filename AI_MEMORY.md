@@ -48,6 +48,13 @@
 
 ## История изменений
 
+### [2026-08-25 — Фикс рассинхрона Redis между Railway и Vercel + Bulk Sync]
+- **Рассинхрон Redis между ботом (Railway) и сайтом (Vercel) (зачем фиксили):** Бот на Railway загружал `wornby:folderSync` из Redis только 1 раз при старте (`ensureLoaded()` кэшировал `loaded=true` навсегда). Когда пользователь добавлял группы через сайт (Vercel serverless), Vercel писал в Redis, но бот на Railway никогда не перечитывал Redis и навсегда оставался на старом числе (31 группа). **Как фиксили:**
+  - `server/folderStore.ts:85-130`: добавлен TTL-кэш `REDIS_CACHE_TTL_MS = 5000` (5 секунд). Если прошло >5с, `ensureLoaded()` делает `redis.get(REDIS_KEY)` и актуализирует `store` на лету без перезапуска сервиса.
+  - `server/folderStore.ts:19`: расширены переменные окружения Redis (`REDIS_PRIVATE_URL`, `REDIS_TLS_URL`, `STORAGE_REDIS_URL` и т.д.).
+  - `server/index.ts:442-467`: `POST /api/folder/sync-bulk` больше не падает с 401 при отсутствии привязки Discord — группы корректно сохраняются под `robloxUsername` для ретроактивной привязки при последующем входе через Discord, а также поддерживается `discordToken` из body как fallback.
+  - `src/hooks/useCopiedGroupsFolder.ts:58`: в `sync-bulk` добавлен `discordToken` как запасной канал для старых сессий / кросс-доменов.
+
 ### [2026-08-25 — Критический аудит: лазейки и утечка токена в URL]
 - **Утечка `discord_token` в URL (критично, зачем фиксили):** `server/index.ts:379` делал `redirect ${frontend}/?discord_token=${signUserId(id)}` → токен попадал в `browser history, referer, server log [HTTP] sanitizeLog(originalUrl), screen share, localStorage wornby_discord_token` (XSS крадет навсегда). Хотя токен — `HMAC(userId)` не `OAuth access_token`, его утечка = вечная имперсонализация: атакующий вызывает `POST /folder/sync {discordToken}` от твоего имени. **Как фиксили:**
   - `server/index.ts:10-35` `verifyUserId` теперь `timingSafeEqual` (защита от side-channel) + `SESSION_SECRET` варнинг если ephemeral.

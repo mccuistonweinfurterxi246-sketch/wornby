@@ -438,20 +438,25 @@ app.get('/api/debug/folder', async (req: Request, res: Response) => {
   const store = await folderStore.getStore();
   res.json(store);
 });
-// BULK SYNC — сайт шлёт все 31 группы одним запросом, чтобы не терять из-за rate-limit / куки
+// BULK SYNC — сайт шлёт все группы одним запросом, чтобы не терять из-за rate-limit / куки
 app.post('/api/folder/sync-bulk', async (req: Request, res: Response) => {
-  const { groupIds, robloxUsername } = req.body as { groupIds?: number[]; robloxUsername?: string };
+  const { groupIds, robloxUsername, discordToken } = req.body as { groupIds?: number[]; robloxUsername?: string; discordToken?: string };
   if (!Array.isArray(groupIds) || groupIds.length === 0) { res.status(400).json({ error: 'groupIds required' }); return; }
   if (groupIds.length > 100) { res.status(400).json({ error: 'max 100' }); return; }
+  
   let targetDiscord: string | undefined;
   const authFromCookie = getAuthTokenFromRequest(req);
+  const tokenToVerify = discordToken?.trim() || authFromCookie;
   if (authFromCookie && !isAllowedOrigin(req)) { res.status(403).json({ error: 'CSRF: Origin not allowed' }); return; }
-  if (authFromCookie) {
-    const verified = verifyUserId(authFromCookie);
+  if (tokenToVerify) {
+    const verified = verifyUserId(tokenToVerify.trim());
     if (verified) targetDiscord = verified;
   }
-  if (!targetDiscord && robloxUsername) targetDiscord = await folderStore.getDiscordForRoblox(robloxUsername) ?? undefined;
-  if (!targetDiscord) { res.status(401).json({ error: 'Not authenticated — connect Discord first' }); return; }
+  if (!targetDiscord && robloxUsername) {
+    const linked = await folderStore.getDiscordForRoblox(robloxUsername);
+    if (linked) targetDiscord = linked;
+  }
+
   for (const raw of groupIds) {
     const gid = Number(raw);
     if (!Number.isFinite(gid) || gid <= 0) continue;
@@ -463,7 +468,7 @@ app.post('/api/folder/sync-bulk', async (req: Request, res: Response) => {
       }).catch(()=>{});
     }
   }
-  res.json({ ok: true, synced: groupIds.length, for: targetDiscord });
+  res.json({ ok: true, synced: groupIds.length, for: targetDiscord ?? null });
 });
 // 1-клик OAuth — без ввода ника/ID (frontend URL берём из Referer чтобы попасть на 5173/5174 автоматом)
 app.get('/api/auth/discord', (req: Request, res: Response) => {

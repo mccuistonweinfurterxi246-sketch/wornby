@@ -53,13 +53,14 @@ export function useCopiedGroupsFolder() {
   useEffect(() => {
     if (entries.length === 0) return;
     const robloxUsername = localStorage.getItem('wornby_last_roblox_username') || undefined;
-    // bulk — один запрос на 31 группу, чтобы не упереться в 60/мин rate-limit и не терять куки
+    const legacyToken = (()=>{ try { return localStorage.getItem('wornby_discord_token')?.trim() || undefined; } catch { return undefined; } })();
+    // bulk — один запрос на все группы, чтобы не упереться в rate-limit
     const ids = entries.map(e=>e.id);
     fetch('/api/folder/sync-bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include' as RequestCredentials,
-      body: JSON.stringify({ groupIds: ids, robloxUsername }),
+      body: JSON.stringify({ groupIds: ids, robloxUsername, ...(legacyToken ? { discordToken: legacyToken } : {}) }),
     }).then(async r=>{
       if (!r.ok) {
         // fallback per-entry если bulk не поддержан (старый деплой)
