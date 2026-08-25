@@ -11,6 +11,7 @@ type Store = {
   tracked: Record<string, { lastItemId: number | null; lastChecked: number; itemStates?: Record<string, { name: string; price: number | null; isForSale: boolean | null }> }>;
   subscriptions: Record<string, string[]>;
   groupRoblox: Record<string, string>;
+  groupMeta?: Record<string, { name: string; memberCount: number; iconUrl?: string }>;
 };
 
 const DATA_DIR = path.join(process.cwd(), 'server', 'data');
@@ -35,6 +36,7 @@ function loadFromFile(): Store {
         tracked: parsed.tracked || {},
         subscriptions: parsed.subscriptions || {},
         groupRoblox: parsed.groupRoblox || {},
+        groupMeta: parsed.groupMeta || {},
       };
       for (const [gid, subscribers] of Object.entries(store.subscriptions)) {
         const personal = subscribers.filter(id => /^\d{17,20}$/.test(id));
@@ -54,7 +56,7 @@ function loadFromFile(): Store {
       return store;
     }
   } catch {}
-  return { version: 2, links: {}, reverseLinks: {}, tracked: {}, subscriptions: {}, groupRoblox: {} };
+  return { version: 2, links: {}, reverseLinks: {}, tracked: {}, subscriptions: {}, groupRoblox: {}, groupMeta: {} };
 }
 
 function cloneStore(s: Store): Store {
@@ -117,6 +119,7 @@ async function ensureLoaded(): Promise<Store> {
             tracked: parsed.tracked || {},
             subscriptions: parsed.subscriptions || {},
             groupRoblox: parsed.groupRoblox || {},
+            groupMeta: parsed.groupMeta || {},
           };
           loaded = true;
           lastRedisFetch = Date.now();
@@ -293,6 +296,37 @@ export const folderStore = {
     s.tracked[gid].itemStates = states;
     s.tracked[gid].lastChecked = Date.now();
     save();
+  },
+  async getGroupMeta(groupId: number): Promise<{ name: string; memberCount: number; iconUrl?: string } | null> {
+    const s = await ensureLoaded();
+    return s.groupMeta?.[String(groupId)] ?? null;
+  },
+  async setGroupMeta(groupId: number, meta: { name: string; memberCount: number; iconUrl?: string }) {
+    const s = await ensureLoaded();
+    if (!s.groupMeta) s.groupMeta = {};
+    s.groupMeta[String(groupId)] = {
+      name: meta.name,
+      memberCount: meta.memberCount,
+      iconUrl: meta.iconUrl,
+    };
+    save();
+  },
+  async setGroupMetasBulk(metas: { id: number; name: string; memberCount: number; iconUrl?: string }[]) {
+    const s = await ensureLoaded();
+    if (!s.groupMeta) s.groupMeta = {};
+    for (const m of metas) {
+      if (!m.id) continue;
+      s.groupMeta[String(m.id)] = {
+        name: m.name,
+        memberCount: m.memberCount,
+        iconUrl: m.iconUrl,
+      };
+    }
+    save();
+  },
+  async getAllGroupMetas(): Promise<Record<string, { name: string; memberCount: number; iconUrl?: string }>> {
+    const s = await ensureLoaded();
+    return s.groupMeta ?? {};
   },
   async getStore(): Promise<Store> {
     const s = await ensureLoaded();

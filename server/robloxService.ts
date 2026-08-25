@@ -507,11 +507,17 @@ export class RobloxService {
     return detailsMap;
   }
 
+  private static groupInfoCache = new Map<number, { data: { id:number; name:string; memberCount:number; description?:string; owner?: unknown; created?:string; updated?:string }; expiresAt: number }>();
+
   public static async getGroupInfo(groupId:number, signal?:AbortSignal): Promise<{ id:number; name:string; memberCount:number; description?:string; owner?: unknown; created?:string; updated?:string } | null> {
+    const cached = this.groupInfoCache.get(groupId);
+    if (cached && Date.now() < cached.expiresAt) return cached.data;
     try {
       const res = await withRetry(()=> robloxAxios.get(`https://groups.roblox.com/v1/groups/${groupId}`, { timeout:6000, signal }));
       if (!res.data?.id) return null;
-      return { id: res.data.id, name: res.data.name, memberCount: res.data.memberCount ?? 0, description: res.data.description, owner: res.data.owner, created: res.data.created, updated: res.data.updated };
+      const data = { id: res.data.id, name: res.data.name, memberCount: res.data.memberCount ?? 0, description: res.data.description, owner: res.data.owner, created: res.data.created, updated: res.data.updated };
+      this.groupInfoCache.set(groupId, { data, expiresAt: Date.now() + 30 * 60 * 1000 }); // 30 min cache
+      return data;
     } catch { return null; }
   }
 

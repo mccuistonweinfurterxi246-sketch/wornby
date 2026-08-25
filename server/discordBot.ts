@@ -383,18 +383,57 @@ export async function startDiscordBot(): Promise<Client | null> {
           await interaction.editReply({ content: roblox ? `📁 Папка пуста для **${roblox}**. Скопируй группу на сайте — бот запомнит.` : `📁 Сначала \`/link ROBLOX_USERNAME\`` });
           return;
         }
-        // быстрый ответ — сначала покажем IDs без API, потом подтянем имена (31× Roblox API = 429 и таймаут 3с)
-        const groupInfos = await Promise.all(myGroups.map(async gid => {
-          try {
-            const info = await Promise.race([
-              RobloxService.getGroupInfo(gid),
-              new Promise<null>(res=> setTimeout(()=>res(null), 2500))
-            ]) as any;
-            if (!info) return { id: gid, name: `Group #${gid}`, memberCount: 0, description: '' };
-            return { id: gid, name: info.name ?? `Group #${gid}`, memberCount: info.memberCount ?? 0, description: (info.description ?? '').slice(0,90) };
-          } catch { return { id: gid, name: `Group #${gid}`, memberCount: 0, description: '' }; }
-        }));
-        // сортировка по members desc чтобы 31 не выглядела рандомно
+        // Загружаем сохраненные метаданные (названия и участников)
+        const savedMetas = await folderStore.getAllGroupMetas();
+        const groupInfos: { id: number; name: string; memberCount: number; description: string }[] = [];
+        const missingIds: number[] = [];
+
+        for (const gid of myGroups) {
+          const meta = savedMetas[String(gid)];
+          if (meta?.name) {
+            groupInfos.push({
+              id: gid,
+              name: meta.name,
+              memberCount: meta.memberCount ?? 0,
+              description: '',
+            });
+          } else {
+            missingIds.push(gid);
+          }
+        }
+
+        if (missingIds.length > 0) {
+          // Чанками по 5, чтобы не словить 429 от Roblox API
+          for (let i = 0; i < missingIds.length; i += 5) {
+            const batch = missingIds.slice(i, i + 5);
+            await Promise.all(batch.map(async (gid) => {
+              try {
+                const info = await RobloxService.getGroupInfo(gid);
+                if (info?.name) {
+                  groupInfos.push({
+                    id: gid,
+                    name: info.name,
+                    memberCount: info.memberCount ?? 0,
+                    description: (info.description ?? '').slice(0, 90),
+                  });
+                  await folderStore.setGroupMeta(gid, {
+                    name: info.name,
+                    memberCount: info.memberCount ?? 0,
+                  }).catch(() => {});
+                } else {
+                  groupInfos.push({ id: gid, name: `Group #${gid}`, memberCount: 0, description: '' });
+                }
+              } catch {
+                groupInfos.push({ id: gid, name: `Group #${gid}`, memberCount: 0, description: '' });
+              }
+            }));
+            if (i + 5 < missingIds.length) {
+              await new Promise(r => setTimeout(r, 400));
+            }
+          }
+        }
+
+        // сортировка по members desc
         groupInfos.sort((a,b)=> b.memberCount - a.memberCount);
         const chunks: typeof groupInfos[] = [];
         for (let i=0;i<groupInfos.length;i+=25) chunks.push(groupInfos.slice(i,i+25));
@@ -420,6 +459,14 @@ export async function startDiscordBot(): Promise<Client | null> {
       } else if (interaction.commandName === 'track') {
         const gid = interaction.options.getInteger('group_id', true);
         await folderStore.track(gid, discordUserId);
+        RobloxService.getGroupInfo(gid).then(async (info) => {
+          if (info?.name) {
+            await folderStore.setGroupMeta(gid, {
+              name: info.name,
+              memberCount: info.memberCount ?? 0,
+            }).catch(() => {});
+          }
+        }).catch(() => {});
         // Сидим тихо: инициализируем кэш без спама — подтягиваем 1 новинку для lastItemId
         const seed = await import('./robloxService.js').then(m=> m.RobloxService.getAllGroupItems(gid, 30).then(d=> d[0]?.id ?? 0).catch(()=>0));
         if (seed) await folderStore.setLastItemId(gid, seed);

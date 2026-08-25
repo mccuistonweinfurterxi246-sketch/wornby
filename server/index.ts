@@ -375,7 +375,14 @@ function isAllowedOrigin(req: Request): boolean {
 
 // Folder ↔ Discord sync — сайт сообщает что скопировали группу
 app.post('/api/folder/sync', async (req: Request, res: Response) => {
-  const { groupId, robloxUsername, discordToken } = req.body as { groupId?: number; robloxUsername?: string; discordToken?: string };
+  const { groupId, groupName, memberCount, iconUrl, robloxUsername, discordToken } = req.body as {
+    groupId?: number;
+    groupName?: string;
+    memberCount?: number;
+    iconUrl?: string;
+    robloxUsername?: string;
+    discordToken?: string;
+  };
   const gid = Number(groupId);
   if (!Number.isFinite(gid) || gid <= 0) { res.status(400).json({ error: 'Invalid groupId' }); return; }
   
@@ -388,13 +395,19 @@ app.post('/api/folder/sync', async (req: Request, res: Response) => {
     const verified = verifyUserId(tokenToVerify.trim());
     if (verified) targetDiscord = verified;
     else if (discordToken) { res.status(401).json({ error: 'Invalid discordToken' }); return; }
-    // cookie невалиден — молча fallback на robloxUsername, не 401 чтобы не ломать неавторизованных
   }
   if (!targetDiscord && robloxUsername) {
     const linked = await folderStore.getDiscordForRoblox(robloxUsername);
     if (linked) targetDiscord = linked;
   }
   await folderStore.track(gid, targetDiscord, robloxUsername);
+  if (groupName) {
+    await folderStore.setGroupMeta(gid, {
+      name: groupName,
+      memberCount: typeof memberCount === 'number' ? memberCount : 0,
+      iconUrl,
+    }).catch(()=>{});
+  }
   
   if (await folderStore.getLastItemId(gid) == null) {
     RobloxService.getGroupNewItems(gid, 1).then(async d=> {
@@ -440,9 +453,18 @@ app.get('/api/debug/folder', async (req: Request, res: Response) => {
 });
 // BULK SYNC — сайт шлёт все группы одним запросом, чтобы не терять из-за rate-limit / куки
 app.post('/api/folder/sync-bulk', async (req: Request, res: Response) => {
-  const { groupIds, robloxUsername, discordToken } = req.body as { groupIds?: number[]; robloxUsername?: string; discordToken?: string };
-  if (!Array.isArray(groupIds) || groupIds.length === 0) { res.status(400).json({ error: 'groupIds required' }); return; }
-  if (groupIds.length > 100) { res.status(400).json({ error: 'max 100' }); return; }
+  const { groupIds, groups, robloxUsername, discordToken } = req.body as {
+    groupIds?: number[];
+    groups?: { id: number; name?: string; memberCount?: number; iconUrl?: string }[];
+    robloxUsername?: string;
+    discordToken?: string;
+  };
+  const list = (Array.isArray(groups) && groups.length > 0)
+    ? groups.map(g => ({ id: Number(g.id), name: g.name, memberCount: g.memberCount, iconUrl: g.iconUrl })).filter(g => Number.isFinite(g.id) && g.id > 0)
+    : (Array.isArray(groupIds) ? groupIds.map(id => ({ id: Number(id), name: undefined, memberCount: undefined, iconUrl: undefined })).filter(g => Number.isFinite(g.id) && g.id > 0) : []);
+
+  if (list.length === 0) { res.status(400).json({ error: 'groups or groupIds required' }); return; }
+  if (list.length > 100) { res.status(400).json({ error: 'max 100' }); return; }
   
   let targetDiscord: string | undefined;
   const authFromCookie = getAuthTokenFromRequest(req);
@@ -457,18 +479,28 @@ app.post('/api/folder/sync-bulk', async (req: Request, res: Response) => {
     if (linked) targetDiscord = linked;
   }
 
-  for (const raw of groupIds) {
-    const gid = Number(raw);
-    if (!Number.isFinite(gid) || gid <= 0) continue;
-    await folderStore.track(gid, targetDiscord, robloxUsername);
-    if (await folderStore.getLastItemId(gid) == null) {
-      RobloxService.getGroupNewItems(gid, 1).then(async d=> {
+  const metaToSave: { id: number; name: string; memberCount: number; iconUrl?: string }[] = [];
+  for (const item of list) {
+    await folderStore.track(item.id, targetDiscord, robloxUsername);
+    if (item.name) {
+      metaToSave.push({
+        id: item.id,
+        name: item.name,
+        memberCount: typeof item.memberCount === 'number' ? item.memberCount : 0,
+        iconUrl: item.iconUrl,
+      });
+    }
+    if (await folderStore.getLastItemId(item.id) == null) {
+      RobloxService.getGroupNewItems(item.id, 1).then(async d=> {
         const latest = d.items[0];
-        if (latest?.id) await folderStore.setLastItemId(gid, latest.id);
+        if (latest?.id) await folderStore.setLastItemId(item.id, latest.id);
       }).catch(()=>{});
     }
   }
-  res.json({ ok: true, synced: groupIds.length, for: targetDiscord ?? null });
+  if (metaToSave.length > 0) {
+    await folderStore.setGroupMetasBulk(metaToSave).catch(()=>{});
+  }
+  res.json({ ok: true, synced: list.length, for: targetDiscord ?? null });
 });
 // 1-клик OAuth — без ввода ника/ID (frontend URL берём из Referer чтобы попасть на 5173/5174 автоматом)
 app.get('/api/auth/discord', (req: Request, res: Response) => {

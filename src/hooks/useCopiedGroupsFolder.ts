@@ -54,13 +54,14 @@ export function useCopiedGroupsFolder() {
     if (entries.length === 0) return;
     const robloxUsername = localStorage.getItem('wornby_last_roblox_username') || undefined;
     const legacyToken = (()=>{ try { return localStorage.getItem('wornby_discord_token')?.trim() || undefined; } catch { return undefined; } })();
-    // bulk — один запрос на все группы, чтобы не упереться в rate-limit
+    // bulk — один запрос на все группы со всеми метаданными (названия, участники, аватарки)
+    const groups = entries.map(e => ({ id: e.id, name: e.name, memberCount: e.memberCount, iconUrl: e.iconUrl }));
     const ids = entries.map(e=>e.id);
     fetch('/api/folder/sync-bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include' as RequestCredentials,
-      body: JSON.stringify({ groupIds: ids, robloxUsername, ...(legacyToken ? { discordToken: legacyToken } : {}) }),
+      body: JSON.stringify({ groupIds: ids, groups, robloxUsername, ...(legacyToken ? { discordToken: legacyToken } : {}) }),
     }).then(async r=>{
       if (!r.ok) {
         // fallback per-entry если bulk не поддержан (старый деплой)
@@ -70,7 +71,7 @@ export function useCopiedGroupsFolder() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include' as RequestCredentials,
-            body: JSON.stringify({ groupId: entry.id, groupName: entry.name, robloxUsername, ...(legacyToken ? { discordToken: legacyToken } : {}) }),
+            body: JSON.stringify({ groupId: entry.id, groupName: entry.name, memberCount: entry.memberCount, iconUrl: entry.iconUrl, robloxUsername, ...(legacyToken ? { discordToken: legacyToken } : {}) }),
           }).catch(()=>{});
         }
       }
@@ -81,7 +82,7 @@ export function useCopiedGroupsFolder() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include' as RequestCredentials,
-          body: JSON.stringify({ groupId: entry.id, groupName: entry.name, robloxUsername, ...(legacyToken ? { discordToken: legacyToken } : {}) }),
+          body: JSON.stringify({ groupId: entry.id, groupName: entry.name, memberCount: entry.memberCount, iconUrl: entry.iconUrl, robloxUsername, ...(legacyToken ? { discordToken: legacyToken } : {}) }),
         }).catch(()=>{});
       }
     });
@@ -100,7 +101,6 @@ export function useCopiedGroupsFolder() {
       const next = [entry, ...prev].slice(0, 100);
       save(next);
       // авто-синк с Discord — сайт понимает и запоминает для будущих уведомлений (bot DM)
-      // токен теперь в HttpOnly куке, в body не кладем чтобы не светить в логах
       try {
         const robloxUsername = source?.name || localStorage.getItem('wornby_last_roblox_username') || undefined;
         if (robloxUsername) try { localStorage.setItem('wornby_last_roblox_username', robloxUsername); } catch {}
@@ -109,7 +109,7 @@ export function useCopiedGroupsFolder() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include' as RequestCredentials,
-          body: JSON.stringify({ groupId: group.id, groupName: group.name, robloxUsername, ...(legacyToken ? { discordToken: legacyToken } : {}) }),
+          body: JSON.stringify({ groupId: group.id, groupName: group.name, memberCount: group.memberCount, iconUrl: group.iconUrl, robloxUsername, ...(legacyToken ? { discordToken: legacyToken } : {}) }),
         }).catch(()=>{});
       } catch {}
       return next;
