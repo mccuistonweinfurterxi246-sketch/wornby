@@ -38,19 +38,12 @@ function loadFromFile(): Store {
         groupRoblox: parsed.groupRoblox || {},
         groupMeta: parsed.groupMeta || {},
       };
+      // Очищаем только невалидные ID подписчиков, но никогда не удаляем группы
       for (const [gid, subscribers] of Object.entries(store.subscriptions)) {
-        const personal = subscribers.filter(id => /^\d{17,20}$/.test(id));
-        if (personal.length > 0) store.subscriptions[gid] = personal;
-        else {
-          delete store.subscriptions[gid];
-          delete store.tracked[gid];
-          delete store.groupRoblox[gid];
-        }
-      }
-      for (const gid of Object.keys(store.tracked)) {
-        if (!store.subscriptions[gid]) {
-          delete store.tracked[gid];
-          delete store.groupRoblox[gid];
+        if (Array.isArray(subscribers)) {
+          const personal = subscribers.filter(id => /^\d{17,20}$/.test(id));
+          if (personal.length > 0) store.subscriptions[gid] = personal;
+          else delete store.subscriptions[gid];
         }
       }
       return store;

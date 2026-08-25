@@ -78,11 +78,12 @@ export const CopiedGroupsFolder: React.FC<{
   useEffect(() => {
     if (!discordLinked || entries.length === 0) return;
     const ids = entries.map(e=>e.id);
+    const groups = entries.map(e=>({ id: e.id, name: e.name, memberCount: e.memberCount, iconUrl: e.iconUrl }));
     fetch('/api/folder/sync-bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include' as RequestCredentials,
-      body: JSON.stringify({ groupIds: ids }),
+      body: JSON.stringify({ groupIds: ids, groups }),
     }).catch(()=>{
       // fallback per-entry
       for (const e of entries) {
@@ -90,7 +91,7 @@ export const CopiedGroupsFolder: React.FC<{
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include' as RequestCredentials,
-          body: JSON.stringify({ groupId: e.id }),
+          body: JSON.stringify({ groupId: e.id, groupName: e.name, memberCount: e.memberCount, iconUrl: e.iconUrl }),
         }).catch(()=>{});
       }
     });
