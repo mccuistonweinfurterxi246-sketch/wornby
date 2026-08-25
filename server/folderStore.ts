@@ -240,15 +240,20 @@ export const folderStore = {
     const gid = String(groupId);
     if (!s.tracked[gid]) s.tracked[gid] = { lastItemId: null, lastChecked: Date.now() };
     if (robloxUsername) s.groupRoblox[gid] = robloxUsername.toLowerCase();
-    if (discordUserId) {
+    
+    // Авто-определение discordUserId если не передан напрямую
+    let target = discordUserId;
+    if (!target && robloxUsername) {
+      target = s.reverseLinks[robloxUsername.toLowerCase()];
+    }
+    if (!target) {
+      const discords = Object.keys(s.links);
+      if (discords.length === 1) target = discords[0];
+    }
+    
+    if (target) {
       if (!s.subscriptions[gid]) s.subscriptions[gid] = [];
-      if (!s.subscriptions[gid].includes(discordUserId)) s.subscriptions[gid].push(discordUserId);
-    } else if (robloxUsername) {
-      const linked = s.reverseLinks[robloxUsername.toLowerCase()];
-      if (linked) {
-        if (!s.subscriptions[gid]) s.subscriptions[gid] = [];
-        if (!s.subscriptions[gid].includes(linked)) s.subscriptions[gid].push(linked);
-      }
+      if (!s.subscriptions[gid].includes(target)) s.subscriptions[gid].push(target);
     }
     save();
   },

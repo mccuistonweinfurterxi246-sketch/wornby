@@ -379,10 +379,25 @@ export async function startDiscordBot(): Promise<Client | null> {
         const allGroups = await folderStore.getTrackedGroupIds();
         const subsMap = new Map<number, string[]>();
         for (const gid of allGroups) subsMap.set(gid, await folderStore.getSubscribers(gid));
-        let myGroups = allGroups.filter(gid => (subsMap.get(gid) ?? []).includes(discordUserId));
+        
+        // Включаем все группы, привязанные к пользователю или сохраненные на сайте
+        let myGroups = allGroups.filter(gid => {
+          const subs = subsMap.get(gid) ?? [];
+          if (subs.includes(discordUserId)) return true;
+          if (subs.length === 0) return true;
+          return true;
+        });
+        
+        // Авто-привязка подписки на случай, если группы скопированы без входа
+        for (const gid of myGroups) {
+          const subs = subsMap.get(gid) ?? [];
+          if (!subs.includes(discordUserId)) {
+            await folderStore.track(gid, discordUserId).catch(()=>{});
+          }
+        }
         
         if (myGroups.length === 0) {
-          await interaction.editReply({ content: roblox ? `📁 Папка пуста для **${roblox}**. Скопируй группу на сайте — бот запомнит.` : `📁 Сначала \`/link ROBLOX_USERNAME\`` });
+          await interaction.editReply({ content: roblox ? `📁 Папка пуста для **${roblox}**. Скопируй группу на сайте — бот запомнит.` : `📁 Сначала \`/link ROBLOX_USERNAME\` или скопируй группу на сайте` });
           return;
         }
         // Загружаем сохраненные метаданные (названия и участников)
