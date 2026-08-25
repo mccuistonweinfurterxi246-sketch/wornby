@@ -1,0 +1,335 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-size: 16px;
+  --background: #ffffff;
+  --foreground: oklch(0.145 0 0);
+  --card: #ffffff;
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: #030213;
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.95 0.0058 264.53);
+  --secondary-foreground: #030213;
+  --muted: #ececf0;
+  --muted-foreground: #717182;
+  --accent: #e9ebef;
+  --accent-foreground: #030213;
+  --destructive: #d4183d;
+  --destructive-foreground: #ffffff;
+  --border: rgba(0, 0, 0, 0.1);
+  --input: transparent;
+  --input-background: #f3f3f5;
+  --switch-background: #cbced4;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: #030213;
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.145 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.145 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.985 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.396 0.141 25.723);
+  --destructive-foreground: oklch(0.637 0.237 25.331);
+  --border: oklch(0.269 0 0);
+  --input: oklch(0.269 0 0);
+  --ring: oklch(0.439 0 0);
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(0.269 0 0);
+  --sidebar-ring: oklch(0.439 0 0);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border-color: var(--border);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  letter-spacing: -0.01em;
+}
+
+/* Monospace telemetry */
+.font-telemetry {
+  font-family: var(--font-mono);
+  letter-spacing: 0.05em;
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+/* Antigravity Sinusoidal Floating — GPU-only, 60fps, no layout trashing */
+@keyframes floatZeroG {
+  0% { transform: translate3d(0, 0, 0) translateY(0); }
+  50% { transform: translate3d(0, 0, 0) translateY(-4px); }
+  100% { transform: translate3d(0, 0, 0) translateY(0); }
+}
+
+.animate-float-slow,
+.animate-float-delayed,
+.animate-float-fast {
+  will-change: transform;
+  backface-visibility: hidden;
+  transform: translateZ(0);
+  /* isolate composite layer */
+  contain: layout paint style;
+}
+
+.animate-float-slow {
+  animation: floatZeroG 6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.animate-float-delayed {
+  animation: floatZeroG 6.5s cubic-bezier(0.4, 0, 0.6, 1) 0.8s infinite;
+}
+
+.animate-float-fast {
+  animation: floatZeroG 5.8s cubic-bezier(0.4, 0, 0.6, 1) 0.4s infinite;
+}
+
+/* Disable float for users who prefer reduced motion or on low-fps devices */
+@media (prefers-reduced-motion: reduce) {
+  .animate-float-slow, .animate-float-delayed, .animate-float-fast {
+    animation: none !important;
+  }
+}
+
+/* Pause float when user prefers or when container is not hovered — saves GPU */
+@media (hover: none) {
+  .animate-float-slow, .animate-float-delayed, .animate-float-fast {
+    animation-duration: 7.5s;
+  }
+}
+
+/* Ambient Chromatic Drift Orbs (Richard Sancho Style) */
+@keyframes orbDrift1 {
+
+  0%,
+  100% {
+    transform: translate(0%, 0%) scale(1);
+  }
+
+  33% {
+    transform: translate(6%, -8%) scale(1.1);
+  }
+
+  66% {
+    transform: translate(-5%, 6%) scale(0.95);
+  }
+}
+
+@keyframes orbDrift2 {
+
+  0%,
+  100% {
+    transform: translate(0%, 0%) scale(1.05);
+  }
+
+  33% {
+    transform: translate(-8%, 5%) scale(0.9);
+  }
+
+  66% {
+    transform: translate(7%, -6%) scale(1.15);
+  }
+}
+
+@keyframes orbDrift3 {
+
+  0%,
+  100% {
+    transform: translate(0%, 0%) scale(0.95);
+  }
+
+  50% {
+    transform: translate(10%, 10%) scale(1.1);
+  }
+}
+
+.animate-orb-1 {
+  animation: orbDrift1 18s ease-in-out infinite;
+}
+
+.animate-orb-2 {
+  animation: orbDrift2 22s ease-in-out infinite;
+}
+
+.animate-orb-3 {
+  animation: orbDrift3 26s ease-in-out infinite;
+}
+
+/* Haptic Scale Punch on Trigger */
+@keyframes hapticPunch {
+  0% {
+    transform: scale(1);
+  }
+
+  25% {
+    transform: scale(0.94);
+  }
+
+  65% {
+    transform: scale(1.04);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+.haptic-active {
+  animation: hapticPunch 0.35s var(--ease-elastic);
+}
+
+/* Tactical Crosshairs & Blueprint markers */
+.telemetry-bracket {
+  position: relative;
+}
+
+.telemetry-bracket::before {
+  content: '[';
+  color: var(--text-faint);
+  margin-right: 0.35rem;
+}
+
+.telemetry-bracket::after {
+  content: ']';
+  color: var(--text-faint);
+  margin-left: 0.35rem;
+}
+
+/* CRT Scanline Micro-texture (Subtle) */
+.scanlines {
+  background: repeating-linear-gradient(0deg,
+      transparent,
+      transparent 3px,
+      rgba(0, 0, 0, 0.18) 3px,
+      rgba(0, 0, 0, 0.18) 6px);
+  pointer-events: none;
+}
+
+/* ── Premium Scrollbar ── thin, glass, blends with dark UI ── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+
+html {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+  margin-block: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.16);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: rgba(255, 255, 255, 0.22);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Overlay variant — invisible until hover (for cards / folders) */
+.fancy-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.fancy-scroll:hover {
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+
+.fancy-scroll::-webkit-scrollbar-track {
+  background: transparent;
+  margin-block: 4px;
+}
+
+.fancy-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-color: transparent;
+}
+
+.fancy-scroll:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  background-clip: padding-box;
+}
+
+.fancy-scroll:hover::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+  background-clip: padding-box;
+}
+
+.fancy-scroll:hover::-webkit-scrollbar-thumb:active {
+  background: rgba(255, 255, 255, 0.24);
+  background-clip: padding-box;
+}

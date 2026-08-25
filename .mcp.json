@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "snyk": {
+      "command": "npx",
+      "args": ["-y", "snyk@latest", "mcp", "-t", "stdio"]
+    },
+    "fetch": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-fetch"]
+    },
+    "puppeteer": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-puppeteer"]
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "./"
+      ]
+    }
+  }
+}
