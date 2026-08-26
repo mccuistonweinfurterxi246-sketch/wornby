@@ -8,6 +8,9 @@ export interface RobloxUserResolve {
   id: number; name: string; displayName: string; hasVerifiedBadge: boolean;
   description?: string; created?: string; isBanned?: boolean;
 }
+export interface RobloxUserSearchResult {
+  id: number; name: string; displayName: string; hasVerifiedBadge: boolean; headshotUrl: string | null;
+}
 export interface RobloxAvatarThumbnails { fullBodyUrl: string | null; headshotUrl: string | null; }
 export interface RobloxAssetItem {
   id: number; name: string; description: string; assetType?: number | string; assetTypeName?: string;
@@ -50,6 +53,10 @@ const metaCache = new LRUCache<number, Pick<RobloxAssetItem,'name'|'description'
 const groupStoreCache = new LRUCache<string, { items: RobloxAssetItem[]; nextPageCursor: string | null }>({
   max: 300,
   ttl: 1000 * 60 * 5, // 5 min cache
+});
+const groupStoreStatusCache = new LRUCache<number, { hasItems: boolean }>({
+  max: 2000,
+  ttl: 1000 * 60 * 10,
 });
 
 // ── 4️⃣ ETag caches for conditional GET (304) ────────────────────────
@@ -190,6 +197,78 @@ const ASSET_TYPE_MAP: Record<number,string> = {
 };
 
 export class RobloxService {
+  public static async getGroupStoreStatus(groupId: number, signal?: AbortSignal): Promise<{ hasItems: boolean }> {
+    const cached = groupStoreStatusCache.get(groupId);
+    if (cached) return cached;
+
+    const client = egressForAsset(groupId);
+    const params = {
+      category: 'All',
+      creatorTargetId: groupId,
+      creatorType: 2,
+      limit: 10,
+      sortType: 'RecentlyCreated',
+      sortOrder: 'Desc',
+      includeNotForSale: true,
+    };
+
+    let response;
+    try {
+      // The official catalog endpoint has a very strict anonymous limit; use the
+      // existing RoProxy fallback first for lightweight background availability checks.
+      response = await withRetry(() => client.get('https://catalog.roproxy.com/v1/search/items', {
+        params,
+        timeout: CATALOG_TIMEOUT,
+        signal,
+      }), 0);
+    } catch {
+      response = await withRetry(() => client.get('https://catalog.roblox.com/v1/search/items', {
+        params,
+        timeout: CATALOG_TIMEOUT,
+        signal,
+      }), 0);
+    }
+
+    const items = response.data?.data ?? response.data?.items ?? [];
+    const result = { hasItems: Array.isArray(items) && items.some((item: { id?: unknown; itemId?: unknown }) => Number(item.id ?? item.itemId) > 0) };
+    groupStoreStatusCache.set(groupId, result);
+    return result;
+  }
+
+  public static async searchUsers(keyword: string, signal?: AbortSignal): Promise<RobloxUserSearchResult[]> {
+    const res = await withRetry(() => robloxAxios.get('https://users.roblox.com/v1/users/search', {
+      // Roblox only accepts 10, 25, 50, or 100 for this endpoint.
+      params: { keyword: keyword.trim(), limit: 10, sortOrder: 'Asc' },
+      timeout: 6000,
+      signal,
+    }));
+    const users = Array.isArray(res.data?.data) ? res.data.data.slice(0, 8) : [];
+    const userIds = users.map((user: { id: number }) => Number(user.id)).filter((id: number) => Number.isSafeInteger(id) && id > 0);
+    const headshotMap = new Map<number, string | null>();
+    if (userIds.length > 0) {
+      try {
+        const thumbnailResponse = await withRetry(() => robloxAxios.get('https://thumbnails.roblox.com/v1/users/avatar-headshot', {
+          params: { userIds: userIds.join(','), size: '150x150', format: 'Png', isCircular: false },
+          timeout: 7000,
+          signal,
+        }));
+        const thumbnails = Array.isArray(thumbnailResponse.data?.data) ? thumbnailResponse.data.data : [];
+        for (const thumbnail of thumbnails as { targetId: number; imageUrl?: string }[]) {
+          headshotMap.set(Number(thumbnail.targetId), thumbnail.imageUrl || null);
+        }
+      } catch {
+        // Suggestions are still useful when Roblox's thumbnail service is unavailable.
+      }
+    }
+    return users.map((user: { id: number; name: string; displayName?: string; hasVerifiedBadge?: boolean }) => ({
+      id: Number(user.id),
+      name: user.name,
+      displayName: user.displayName || user.name,
+      hasVerifiedBadge: !!user.hasVerifiedBadge,
+      headshotUrl: headshotMap.get(Number(user.id)) || null,
+    }));
+  }
+
   public static async resolveUser(query: string, signal?: AbortSignal): Promise<RobloxUserResolve> {
     const trimmed = query.trim();
     const isNumeric = /^\d+$/.test(trimmed);
@@ -628,12 +707,13 @@ export class RobloxService {
         if (info?.name) groupName = info.name;
       } catch {}
 
-      // Try search with details endpoint first (returns all authentic metadata in 1 single GET request)
+      // Try the resilient mirror first: the official anonymous catalog endpoint
+      // is commonly throttled before the store is opened.
       let res;
       let isDetailedSearch = false;
       try {
         res = await withRetry(() =>
-          client.get(`https://catalog.roblox.com/v1/search/items/details`, {
+          client.get(`https://catalog.roproxy.com/v1/search/items/details`, {
             params: {
               category: 'All',
               creatorTargetId: groupId,
@@ -655,7 +735,7 @@ export class RobloxService {
       } catch {
         try {
           res = await withRetry(() =>
-            client.get(`https://catalog.roproxy.com/v1/search/items/details`, {
+              client.get(`https://catalog.roblox.com/v1/search/items/details`, {
               params: {
                 category: 'All',
                 creatorTargetId: groupId,
@@ -677,7 +757,7 @@ export class RobloxService {
         } catch {
           try {
             res = await withRetry(() =>
-              client.get(`https://catalog.roblox.com/v1/search/items`, {
+              client.get(`https://catalog.roproxy.com/v1/search/items`, {
                 params: {
                   category: 'All',
                   creatorTargetId: groupId,
@@ -695,7 +775,7 @@ export class RobloxService {
             );
           } catch {
             res = await withRetry(() =>
-              client.get(`https://catalog.roproxy.com/v1/search/items`, {
+              client.get(`https://catalog.roblox.com/v1/search/items`, {
                 params: {
                   category: 'All',
                   creatorTargetId: groupId,

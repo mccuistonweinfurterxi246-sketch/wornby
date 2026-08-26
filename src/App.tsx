@@ -6,12 +6,14 @@ import { Stage2Inspector } from './components/Stage2Inspector';
 import { NoiseOverlay } from './components/NoiseOverlay';
 import { Toaster } from './components/ui/sonner';
 import { AudioHaptics } from './components/AudioHaptics';
+import { usePlayerHistory } from './hooks/usePlayerHistory';
 
 export const App: React.FC = () => {
   const [profileData, setProfileData] = useState<RobloxUserProfileFull | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [streamingValuation, setStreamingValuation] = useState<{ totalValueRobux: number; pricedCount: number; seen: number; total: number } | null>(null);
+  const { lastPlayer, recordPlayer } = usePlayerHistory();
   // race protection
   const searchSeqRef = React.useRef(0);
   const abortRef = React.useRef<AbortController | null>(null);
@@ -40,6 +42,12 @@ export const App: React.FC = () => {
       }, fresh, ac.signal);
       if (ac.signal.aborted || seq !== searchSeqRef.current) return;
       setProfileData(data);
+      recordPlayer({
+        id: data.user.id,
+        name: data.user.name,
+        displayName: data.user.displayName,
+        headshotUrl: data.thumbnails.headshotUrl,
+      });
       try { localStorage.setItem('wornby_last_roblox_username', data.user.name); } catch {}
 
       // Update URL search query without page reload
@@ -63,7 +71,7 @@ export const App: React.FC = () => {
     } finally {
       if (seq === searchSeqRef.current) { setIsLoading(false); setStreamingValuation(null); }
     }
-  }, []);
+  }, [recordPlayer]);
 
   const handleBackToHero = useCallback(() => {
     setProfileData(null);
@@ -76,7 +84,7 @@ export const App: React.FC = () => {
   // Initial check for ?u=username URL param + back/forward handling
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const initialUser = params.get('u');
+    const initialUser = params.get('u') || lastPlayer?.name || localStorage.getItem('wornby_last_roblox_username');
     if (initialUser && initialUser.trim()) {
       handleSearch(initialUser.trim());
     }

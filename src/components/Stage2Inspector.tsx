@@ -11,7 +11,6 @@ import { toast } from 'sonner';
 import { AudioHaptics } from './AudioHaptics';
 import { FALLBACK_AVATAR_SVG } from '../lib/fallbacks';
 import {
-  Search,
   ArrowLeft,
   Calendar,
   Layers,
@@ -35,6 +34,7 @@ import { CopiedGroupsFolder } from './CopiedGroupsFolder';
 import { useFavorites } from '../hooks/useFavorites';
 import { GroupStoreModal } from './GroupStoreModal';
 import { FavoritesDrawer } from './FavoritesDrawer';
+import { PlayerSearch } from './PlayerSearch';
 
 interface Stage2InspectorProps {
   data: RobloxUserProfileFull;
@@ -52,7 +52,6 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
   isLoading,
 }) => {
   const [activeTab, setActiveTab] = useState<'outfit' | 'groups'>('outfit');
-  const [searchInput, setSearchInput] = useState('');
   const [copiedAction, setCopiedAction] = useState<string | null>(null);
   const [groupSort, setGroupSort] = useState<GroupSortOption>('default');
 
@@ -81,12 +80,6 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
   const folder = useCopiedGroupsFolder();
 
   const { user, thumbnails, outfit, groups, telemetry } = data;
-
-  const handleSearchSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!searchInput.trim() || isLoading) return;
-    onNewSearch(searchInput.trim());
-  };
 
   const copyTelemetryValue = async (text: string, actionKey: string) => {
     try {
@@ -272,25 +265,9 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
 
         {/* Quick Search Header Input & Wishlist Trigger */}
         <div className="flex items-center gap-2.5 flex-1 max-w-lg justify-end">
-          <form onSubmit={handleSearchSubmit} className="flex-1 max-w-md">
-            <div className="relative flex items-center">
-              <input
-                type="text"
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-                placeholder="inspect another user..."
-                className="w-full bg-white/[0.04] backdrop-blur-md hover:bg-white/[0.06] focus:bg-black/80 focus:backdrop-blur-xl text-white placeholder:text-white/30 text-xs font-mono px-4 py-2.5 pr-20 rounded-xl border border-white/[0.06] focus:border-white/30 focus:outline-none transition-all shadow-inner"
-              />
-              <button
-                type="submit"
-                disabled={isLoading || !searchInput.trim()}
-                className="absolute right-1 px-3 py-1.5 rounded-lg bg-white/10 backdrop-blur-md hover:bg-white/20 text-white text-xs font-mono transition-colors disabled:opacity-30 flex items-center gap-1 shadow-sm"
-              >
-                {isLoading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Search className="w-3 h-3" />}
-                <span>FIND</span>
-              </button>
-            </div>
-          </form>
+          <div className="flex-1 max-w-md">
+            <PlayerSearch onSearch={onNewSearch} isLoading={isLoading} variant="compact" />
+          </div>
 
           {/* Wishlist Header Trigger */}
           <button
@@ -739,6 +716,7 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
       isOpen={!!storeModalGroup}
       onClose={() => setStoreModalGroup(null)}
       group={storeModalGroup}
+      groups={groups}
     />
 
     {/* Favorites & Wishlist Drawer */}

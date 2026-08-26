@@ -12,7 +12,24 @@ export type StreamEvent =
   | { event: 'done'; data: RobloxUserProfileFull }
   | { event: 'error'; data: { error: string } };
 
+export interface RobloxUserSearchResult {
+  id: number;
+  name: string;
+  displayName: string;
+  hasVerifiedBadge: boolean;
+  headshotUrl: string | null;
+}
+
 export class RobloxApiClient {
+  public static async searchUsers(keyword: string, signal?: AbortSignal): Promise<RobloxUserSearchResult[]> {
+    const response = await axios.get<{ users: RobloxUserSearchResult[] }>(`${API_BASE}/users/search`, {
+      params: { keyword: keyword.trim() },
+      timeout: 8000,
+      signal,
+    });
+    return response.data.users || [];
+  }
+
   /**
    * Fetch full outfit and group telemetry for a user — классический JSON (fallback)
    */
@@ -143,6 +160,14 @@ export class RobloxApiClient {
         signal,
       }
     );
+    return response.data;
+  }
+
+  public static async fetchGroupStoreStatus(groupId: number, signal?: AbortSignal): Promise<{ hasItems: boolean }> {
+    const response = await axios.get<{ hasItems: boolean }>(`${API_BASE}/group/${groupId}/store-status`, {
+      timeout: 10000,
+      signal,
+    });
     return response.data;
   }
 }

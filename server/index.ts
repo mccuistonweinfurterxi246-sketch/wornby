@@ -190,6 +190,25 @@ app.get('/api/cron/check', async (req: Request, res: Response) => {
 });
 
 // User Full Profile & Outfit Endpoint
+app.get('/api/users/search', async (req: Request, res: Response) => {
+  const keyword = typeof req.query.keyword === 'string' ? req.query.keyword.trim() : '';
+  if (keyword.length < 2 || keyword.length > 20) {
+    res.json({ users: [] });
+    return;
+  }
+  const controller = new AbortController();
+  req.once('close', () => controller.abort());
+  try {
+    const users = await RobloxService.searchUsers(keyword, controller.signal);
+    if (controller.signal.aborted) return;
+    res.json({ users });
+  } catch (err: unknown) {
+    if (controller.signal.aborted) return;
+    console.warn('[User Search] failed', sanitizeLog((err as Error).message || 'unknown error'));
+    res.json({ users: [] });
+  }
+});
+
 app.get('/api/user/:query', async (req: Request, res: Response) => {
   const { query } = req.params;
   const bypassCache = req.query.fresh === 'true';
@@ -653,6 +672,25 @@ app.get('/api/group/:id/store', async (req: Request, res: Response) => {
     const err = e as Error;
     if (err.name === 'AbortError') return;
     res.status(500).json({ error: 'Failed to fetch group store' });
+  }
+});
+
+app.get('/api/group/:id/store-status', async (req: Request, res: Response) => {
+  const gid = Number(req.params.id?.trim());
+  if (!Number.isFinite(gid) || gid <= 0 || !Number.isInteger(gid)) {
+    res.status(400).json({ error: 'Invalid group id' });
+    return;
+  }
+
+  const ac = new AbortController();
+  req.on('close', () => ac.abort());
+  try {
+    const status = await RobloxService.getGroupStoreStatus(gid, ac.signal);
+    res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=600');
+    res.json(status);
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') return;
+    res.status(502).json({ error: 'Failed to check group store' });
   }
 });
 
