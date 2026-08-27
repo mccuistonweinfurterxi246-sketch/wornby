@@ -145,7 +145,8 @@ export class RobloxApiClient {
     limit = 100,
     sortType: 'RecentlyCreated' | 'PriceAsc' | 'PriceDesc' | 'Relevance' = 'RecentlyCreated',
     sortOrder: 'Asc' | 'Desc' = 'Desc',
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    fast = false
   ): Promise<{ items: RobloxAssetItem[]; nextPageCursor: string | null }> {
     const response = await axios.get<{ items: RobloxAssetItem[]; nextPageCursor: string | null }>(
       `${API_BASE}/group/${groupId}/store`,
@@ -155,12 +156,23 @@ export class RobloxApiClient {
           limit,
           sortType,
           sortOrder,
+          fast: fast ? 1 : undefined,
         },
         timeout: 15000,
         signal,
       }
     );
     return response.data;
+  }
+
+  public static async fetchAssetThumbnails(assetIds: number[], signal?: AbortSignal): Promise<Record<number, string>> {
+    if (assetIds.length === 0) return {};
+    const response = await axios.post<{ thumbnails: Record<number, string> }>(
+      `${API_BASE}/asset-thumbnails`,
+      { assetIds },
+      { timeout: 15000, signal }
+    );
+    return response.data.thumbnails || {};
   }
 
   public static async fetchGroupStoreStatus(groupId: number, signal?: AbortSignal): Promise<{ hasItems: boolean }> {

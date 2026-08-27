@@ -1,9 +1,8 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Folder, FolderOpen, Trash2, Copy, Check, ExternalLink, Clock, Users, Sparkles, RefreshCw, ChevronDown, ChevronUp, Package, Award, Store } from 'lucide-react';
+import { Folder, FolderOpen, Trash2, Check, ExternalLink, Clock, Users, Sparkles, RefreshCw, ChevronDown, ChevronUp, Package, Award, Store } from 'lucide-react';
 import { CopiedGroupEntry } from '../hooks/useCopiedGroupsFolder';
 import { Tooltip, TooltipMono } from './ui/tooltip';
-import { toast } from 'sonner';
 
 function timeAgo(ts: number): string {
   const s = Math.floor((Date.now() - ts) / 1000);
@@ -25,18 +24,8 @@ export const CopiedGroupsFolder: React.FC<{
   onOpenStore?: (group: { id: number; name: string; memberCount: number; iconUrl: string | null }) => void;
 }> = ({ entries, currentGroupIds, currentGroupsById, onRemove, onClear, onCheckUpdates, checking, updates, onOpenStore }) => {
   const [open, setOpen] = useState(true);
-  const [copiedId, setCopiedId] = useState<number | null>(null);
 
   if (entries.length === 0) return null;
-
-  const handleCopy = async (e: CopiedGroupEntry) => {
-    try {
-      await navigator.clipboard.writeText(e.name);
-      setCopiedId(e.id);
-      setTimeout(()=>setCopiedId(null), 2000);
-      toast.success('Copied', { description: e.name });
-    } catch { toast.error('Copy failed'); }
-  };
 
   return (
     <div className="w-full rounded-2xl bg-black/40 backdrop-blur-xl border border-white/[0.07] overflow-hidden shadow-[0_8px_32px_rgba(0,0,0,0.4)]">
@@ -52,7 +41,7 @@ export const CopiedGroupsFolder: React.FC<{
           <span className="p-1.5 rounded-lg bg-amber-500/10 border border-amber-500/15 text-amber-300">
             {open ? <FolderOpen className="w-4 h-4" /> : <Folder className="w-4 h-4" />}
           </span>
-          <span className="text-xs font-mono tracking-[0.14em] font-medium text-white/80">COPIED FOLDER</span>
+          <span className="text-xs font-mono tracking-[0.14em] font-medium text-white/80">SAVED GROUPS</span>
           <span className="px-2 py-0.5 rounded-full bg-white/[0.06] border border-white/10 text-[11px] font-mono font-medium text-white/70">{entries.length}</span>
           {entries.some(e=> updates[e.id]?.hasNewItem) && (
             <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/25 text-emerald-300 text-[11px] font-mono font-medium flex items-center gap-1">
@@ -99,7 +88,6 @@ export const CopiedGroupsFolder: React.FC<{
                 const upd = updates[e.id];
                 const hasNew = upd?.hasNewItem;
                 const delta = upd?.memberDelta;
-                const isCopied = copiedId === e.id;
                 const hasGroup = currentGroupIds?.has(e.id) ?? false;
                 const curRole = currentGroupsById?.get(e.id);
                 return (
@@ -159,7 +147,7 @@ export const CopiedGroupsFolder: React.FC<{
                     )}
 
                     <div className="text-[10px] font-mono tracking-wide text-white/25 flex items-center gap-1">
-                      <Clock className="w-3 h-3" /> Copied {timeAgo(e.copiedAt)} {e.sourceUserName ? `from @${e.sourceUserName}` : ''}
+                      <Clock className="w-3 h-3" /> Saved {timeAgo(e.copiedAt)} {e.sourceUserName ? `from @${e.sourceUserName}` : ''}
                     </div>
 
                     <div className="flex items-center gap-1.5 pt-1 border-t border-white/[0.06]">
@@ -174,14 +162,6 @@ export const CopiedGroupsFolder: React.FC<{
                           </button>
                         </Tooltip>
                       )}
-                      <Tooltip content={<TooltipMono label={isCopied ? 'Copied' : 'Copy name'} hint={e.name.slice(0,20)} />}>
-                        <button
-                          onClick={()=>handleCopy(e)}
-                          className={`flex-1 py-1.5 rounded-lg text-xs font-mono font-medium border flex items-center justify-center gap-1.5 transition-colors ${isCopied ? 'bg-emerald-500/15 border-emerald-500/25 text-emerald-300' : 'bg-white/[0.04] hover:bg-white/[0.06] border-white/10 text-white/70 hover:text-white'}`}
-                        >
-                          {isCopied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />} {isCopied ? 'COPIED' : 'Copy'}
-                        </button>
-                      </Tooltip>
                       <Tooltip content={<TooltipMono label="Open group" hint={`#${e.id}`} />}>
                         <a href={`https://www.roblox.com/groups/${e.id}`} target="_blank" rel="noopener noreferrer" className="p-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-white/60 hover:text-white transition-colors">
                           <ExternalLink className="w-3.5 h-3.5" />

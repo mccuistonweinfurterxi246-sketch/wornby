@@ -100,7 +100,7 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
     }
   };
 
-  const handleGroupCopy = (group: RobloxGroupMembership) => {
+  const handleSaveGroup = (group: RobloxGroupMembership) => {
     setCopiedGroupIds((prev) => {
       const next = new Set(prev);
       next.add(group.id);
@@ -115,6 +115,16 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
     setCopiedGroupIds(new Set());
     folder.clear();
     try { if (typeof window !== 'undefined') localStorage.removeItem('wornby_copied_groups'); } catch { /* ignore */ }
+  };
+
+  const handleRemoveSavedGroup = (groupId: number) => {
+    setCopiedGroupIds((prev) => {
+      const next = new Set(prev);
+      next.delete(groupId);
+      try { if (typeof window !== 'undefined') localStorage.setItem('wornby_copied_groups', JSON.stringify(Array.from(next))); } catch { /* ignore */ }
+      return next;
+    });
+    folder.remove(groupId);
   };
 
   // Multi-criteria sorting for Communities
@@ -648,7 +658,7 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
                   <div className="flex items-center gap-2">
                     <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-950/40 backdrop-blur-md border border-emerald-500/30 text-emerald-400 text-xs font-mono shadow-sm">
                       <Check className="w-3 h-3 text-emerald-400" />
-                      <span>{copiedGroupIds.size} COPIED TO MEMORY</span>
+                      <span>{copiedGroupIds.size} SAVED GROUPS</span>
                     </div>
                     <button
                       onClick={handleClearCopiedMemory}
@@ -662,12 +672,12 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
               </div>
             )}
 
-            {/* Copied Folder — папка скопированных групп с проверкой новинок + сравнение с текущим игроком */}
+            {/* Saved groups — независимая папка магазинов с проверкой новинок */}
             <CopiedGroupsFolder
               entries={folder.entries}
               currentGroupIds={currentGroupIds}
               currentGroupsById={currentGroupsById}
-              onRemove={folder.remove}
+              onRemove={handleRemoveSavedGroup}
               onClear={folder.clear}
               onCheckUpdates={folder.checkForUpdates}
               checking={folder.checking}
@@ -697,8 +707,8 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
                     key={grp.id}
                     group={grp}
                     index={idx}
-                    isCopiedPersistent={copiedGroupIds.has(grp.id)}
-                    onCopyGroup={handleGroupCopy}
+                    isSaved={copiedGroupIds.has(grp.id)}
+                    onSaveGroup={handleSaveGroup}
                     onOpenStore={(g) => setStoreModalGroup(g)}
                   />
                 ))}
@@ -717,6 +727,9 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
       onClose={() => setStoreModalGroup(null)}
       group={storeModalGroup}
       groups={groups}
+      savedGroups={folder.entries}
+      onSaveGroup={handleSaveGroup}
+      onRemoveSavedGroup={handleRemoveSavedGroup}
     />
 
     {/* Favorites & Wishlist Drawer */}

@@ -10,6 +10,7 @@ interface QuickCopyStationProps {
   catalogUrl: string;
   assetName: string;
   variant?: 'compact' | 'expanded';
+  showStudioCommand?: boolean;
 }
 
 export const QuickCopyStation: React.FC<QuickCopyStationProps> = ({
@@ -18,6 +19,7 @@ export const QuickCopyStation: React.FC<QuickCopyStationProps> = ({
   catalogUrl,
   assetName,
   variant = 'compact',
+  showStudioCommand = true,
 }) => {
   const [copiedType, setCopiedType] = useState<string | null>(null);
 
@@ -65,7 +67,7 @@ export const QuickCopyStation: React.FC<QuickCopyStationProps> = ({
         </Tooltip>
 
         {/* Studio Lua Script Copy */}
-        <Tooltip content={<TooltipMono label="Copy Studio Lua" hint="InsertService" icon={<Code2 className="w-3 h-3" />} />} side="top">
+        {showStudioCommand && <Tooltip content={<TooltipMono label="Copy Studio Lua" hint="InsertService" icon={<Code2 className="w-3 h-3" />} />} side="top">
           <button
             onClick={() => copyToClipboard(studioLuaCommand, 'lua')}
             aria-label="Copy Studio Lua Insert Command"
@@ -77,7 +79,7 @@ export const QuickCopyStation: React.FC<QuickCopyStationProps> = ({
           >
             {copiedType === 'lua' ? <Check className="w-3 h-3 stroke-[2] text-cyan-400" /> : <Code2 className="w-3 h-3 stroke-[1.75]" />}
           </button>
-        </Tooltip>
+        </Tooltip>}
 
         {/* Catalog Direct Link — премиальный URL-чип */}
         <Tooltip

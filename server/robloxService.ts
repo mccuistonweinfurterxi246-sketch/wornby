@@ -690,9 +690,10 @@ export class RobloxService {
     limit = 100,
     sortType: 'RecentlyCreated' | 'PriceAsc' | 'PriceDesc' | 'Relevance' = 'RecentlyCreated',
     sortOrder: 'Asc' | 'Desc' = 'Desc',
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    includeThumbnails = true
   ): Promise<{ items: RobloxAssetItem[]; nextPageCursor: string | null }> {
-    const cacheKey = `store:${groupId}:${cursor}:${limit}:${sortType}:${sortOrder}`;
+    const cacheKey = `store:${groupId}:${cursor}:${limit}:${sortType}:${sortOrder}:${includeThumbnails ? 'full' : 'fast'}`;
     const cached = groupStoreCache.get(cacheKey);
     if (cached) return cached;
 
@@ -814,9 +815,12 @@ export class RobloxService {
 
       const needsDetails = !isDetailedSearch || !rawItems[0]?.name;
 
-      // Fetch thumbnails and fallback catalog details in parallel
+      // Fast store responses do not wait for the heavy thumbnail service.
+      // The client hydrates images independently after the catalog is visible.
       const [thumbMap, detailsMap] = await Promise.all([
-        this.getAssetThumbnails(assetIds, signal).catch(() => ({} as Record<number, string>)),
+        includeThumbnails
+          ? this.getAssetThumbnails(assetIds, signal).catch(() => ({} as Record<number, string>))
+          : Promise.resolve({} as Record<number, string>),
         needsDetails
           ? this.getCatalogDetails(assetIds, signal).catch(() => new Map<number, Partial<RobloxAssetItem>>())
           : Promise.resolve(new Map<number, Partial<RobloxAssetItem>>()),

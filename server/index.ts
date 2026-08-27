@@ -384,6 +384,47 @@ app.post('/api/batch-assets', async (req: Request, res: Response) => {
   }
 });
 
+// Lightweight second stage for progressive group-store rendering.
+app.post('/api/asset-thumbnails', async (req: Request, res: Response) => {
+  const rawIds = Array.isArray(req.body?.assetIds) ? req.body.assetIds : [];
+  const assetIds: number[] = Array.from(new Set<number>(rawIds.map(Number).filter((id: number) => Number.isSafeInteger(id) && id > 0))).slice(0, 120);
+  if (assetIds.length === 0) {
+    res.status(400).json({ error: 'assetIds must contain valid asset IDs.' });
+    return;
+  }
+
+  const ac = new AbortController();
+  req.on('aborted', () => ac.abort());
+  res.on('close', () => {
+    if (!res.writableEnded) ac.abort();
+  });
+  try {
+    const thumbnails: Record<number, string> = {};
+    let missingIds = assetIds;
+
+    // Roblox can answer with a temporary "Pending" thumbnail state. Retry only
+    // missing IDs so ready images still appear immediately and pending ones follow.
+    for (let attempt = 0; attempt < 3 && missingIds.length > 0; attempt += 1) {
+      if (attempt > 0) {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, 350 * attempt);
+          ac.signal.addEventListener('abort', () => {
+            clearTimeout(timer);
+            reject(new DOMException('Aborted', 'AbortError'));
+          }, { once: true });
+        });
+      }
+      Object.assign(thumbnails, await RobloxService.getAssetThumbnails(missingIds, ac.signal));
+      missingIds = missingIds.filter((id) => !thumbnails[id]);
+    }
+    res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=1800');
+    res.json({ thumbnails });
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') return;
+    res.status(502).json({ error: 'Failed to fetch asset thumbnails' });
+  }
+});
+
 // CSRF: если аутентификация по HttpOnly куке — требуем Origin из allowlist (SameSite Lax не защищает fetch POST)
 function isAllowedOrigin(req: Request): boolean {
   const origin = req.headers.origin as string | undefined;
@@ -661,11 +702,15 @@ app.get('/api/group/:id/store', async (req: Request, res: Response) => {
     ? req.query.sortType
     : 'RecentlyCreated') as 'RecentlyCreated' | 'PriceAsc' | 'PriceDesc' | 'Relevance';
   const sortOrder = (String(req.query.sortOrder).toLowerCase() === 'asc' ? 'Asc' : 'Desc') as 'Asc' | 'Desc';
+  const includeThumbnails = String(req.query.fast) !== '1';
 
   try {
     const ac = new AbortController();
-    req.on('close', () => ac.abort());
-    const data = await RobloxService.getGroupStore(gid, cursor, limit, sortType, sortOrder, ac.signal);
+    req.on('aborted', () => ac.abort());
+    res.on('close', () => {
+      if (!res.writableEnded) ac.abort();
+    });
+    const data = await RobloxService.getGroupStore(gid, cursor, limit, sortType, sortOrder, ac.signal, includeThumbnails);
     res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=180');
     res.json(data);
   } catch (e) {

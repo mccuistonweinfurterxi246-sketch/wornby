@@ -4,7 +4,7 @@ import { RobloxGroupMembership } from '../types/roblox';
 import { TiltCard } from './TiltCard';
 import { Card, CardContent } from './ui/card';
 import { toast } from 'sonner';
-import { Shield, Users, Copy, Check, BadgeCheck, Store } from 'lucide-react';
+import { Shield, Users, Check, BadgeCheck, Store, FolderPlus } from 'lucide-react';
 import { AudioHaptics } from './AudioHaptics';
 import { FALLBACK_GROUP_SVG } from '../lib/fallbacks';
 import { Tooltip, TooltipMono } from './ui/tooltip';
@@ -12,41 +12,30 @@ import { Tooltip, TooltipMono } from './ui/tooltip';
 interface GroupCardProps {
   group: RobloxGroupMembership;
   index: number;
-  isCopiedPersistent: boolean;
-  onCopyGroup: (group: RobloxGroupMembership) => void;
+  isSaved: boolean;
+  onSaveGroup: (group: RobloxGroupMembership) => void;
   onOpenStore?: (group: RobloxGroupMembership) => void;
 }
 
 export const GroupCard: React.FC<GroupCardProps> = ({
   group,
   index,
-  isCopiedPersistent,
-  onCopyGroup,
+  isSaved,
+  onSaveGroup,
   onOpenStore,
 }) => {
-  const [copiedRecently, setCopiedRecently] = useState(false);
+  const [savedRecently, setSavedRecently] = useState(false);
 
-  const handleCopyName = async () => {
-    try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(group.name);
-      } else {
-        const ta = document.createElement('textarea');
-        ta.value = group.name; ta.style.position = 'fixed'; ta.style.opacity = '0';
-        document.body.appendChild(ta); ta.select();
-        document.execCommand('copy'); ta.remove();
-      }
-      AudioHaptics.playCopyPunch();
-      setCopiedRecently(true);
-      onCopyGroup(group);
-      toast.success("Group Name Copied", { description: group.name });
-      setTimeout(() => setCopiedRecently(false), 2200);
-    } catch {
-      toast.error("Copy failed");
-    }
+  const handleSaveGroup = () => {
+    if (isSaved) return;
+    AudioHaptics.playCopyPunch();
+    setSavedRecently(true);
+    onSaveGroup(group);
+    toast.success('Group saved', { description: `${group.name} added to Saved stores` });
+    setTimeout(() => setSavedRecently(false), 2200);
   };
 
-  const isCopied = copiedRecently || isCopiedPersistent;
+  const saved = savedRecently || isSaved;
   // Уникальная волна: диагональ + синус, 60fps, не режет глаза (высокий damping, без отскока)
   const prefersReduced = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   const shouldFloat = !prefersReduced;
@@ -105,11 +94,8 @@ export const GroupCard: React.FC<GroupCardProps> = ({
               {/* Group Metadata */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5 min-w-0">
-                  <Tooltip content={<TooltipMono label="Click to copy" hint={group.name.slice(0,24)} />} side="top" align="start">
-                    <h4 
-                      className="text-sm font-semibold text-white/95 truncate cursor-pointer hover:text-cyan-300 transition-colors flex-1"
-                      onClick={handleCopyName}
-                    >
+                  <Tooltip content={<TooltipMono label={group.name} hint={`Group #${group.id}`} />} side="top" align="start">
+                    <h4 className="text-sm font-semibold text-white/95 truncate flex-1">
                       {group.name}
                     </h4>
                   </Tooltip>
@@ -142,7 +128,7 @@ export const GroupCard: React.FC<GroupCardProps> = ({
                 </Tooltip>
               </div>
 
-              {/* Right: Actions Group (Store Button + Copy Name Button) */}
+              {/* Right: store and saved-folder actions */}
               <div className="flex items-center gap-1.5 shrink-0">
                 {onOpenStore && (
                   <Tooltip content={<TooltipMono label="Browse Store" hint={`${group.name.slice(0, 16)}...`} icon={<Store className="w-3 h-3 text-cyan-400" />} />} side="top">
@@ -160,25 +146,26 @@ export const GroupCard: React.FC<GroupCardProps> = ({
                   </Tooltip>
                 )}
 
-                <Tooltip content={<TooltipMono label={isCopied ? 'Copied' : 'Copy Name'} hint={group.name.slice(0,18)} icon={isCopied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />} />} side="top" align="end">
+                <Tooltip content={<TooltipMono label={saved ? 'Saved group' : 'Save group'} hint={saved ? 'Already in Saved stores' : 'Add to Saved stores'} icon={saved ? <Check className="w-3 h-3" /> : <FolderPlus className="w-3 h-3" />} />} side="top" align="end">
                   <button
-                    onClick={handleCopyName}
-                    aria-label="Copy Group Name"
+                    onClick={handleSaveGroup}
+                    aria-label={saved ? 'Group saved' : 'Save group'}
+                    disabled={saved}
                     className={`shrink-0 w-[84px] h-7 rounded-lg text-xs font-mono transition-all duration-150 active:scale-95 flex items-center justify-center gap-1.5 ${
-                      isCopied
+                      saved
                         ? 'bg-emerald-950/40 text-emerald-400 border border-emerald-500/30 font-semibold shadow-sm'
                         : 'bg-white/[0.04] hover:bg-white/[0.08] text-white/70 hover:text-white border border-white/[0.06]'
                     }`}
                   >
-                    {isCopied ? (
+                    {saved ? (
                       <>
                         <Check className="w-3 h-3 text-emerald-400 shrink-0" />
-                        <span>COPIED</span>
+                        <span>SAVED</span>
                       </>
                     ) : (
                       <>
-                        <Copy className="w-3 h-3 text-white/40 shrink-0" />
-                        <span>Copy Name</span>
+                        <FolderPlus className="w-3 h-3 text-white/50 shrink-0" />
+                        <span>Save</span>
                       </>
                     )}
                   </button>
