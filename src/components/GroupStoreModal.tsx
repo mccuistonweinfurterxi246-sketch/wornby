@@ -90,6 +90,9 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadingAll, setLoadingAll] = useState(false);
+  const [retryingImages, setRetryingImages] = useState(false);
+  const [failedImageIds, setFailedImageIds] = useState<Set<number>>(new Set());
+  const [imageRetryKey, setImageRetryKey] = useState(0);
   const [hasError, setHasError] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -128,21 +131,23 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     sourceItems: RobloxAssetItem[],
     generation: number
   ) => {
-    const missingIds = sourceItems.filter((item) => !item.thumbnailUrl).map((item) => item.id);
+    let missingIds = Array.from(new Set(sourceItems.filter((item) => !item.thumbnailUrl).map((item) => item.id)));
     if (missingIds.length === 0) return;
-    try {
+    const signal = catalogAbortRef.current?.signal;
+    for (let attempt = 0; attempt < 3 && missingIds.length > 0; attempt++) {
+      if (generation !== requestGenerationRef.current || signal?.aborted) return;
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
+      if (generation !== requestGenerationRef.current || signal?.aborted) return;
       const chunks: number[][] = [];
       for (let index = 0; index < missingIds.length; index += 120) chunks.push(missingIds.slice(index, index + 120));
-      const maps = await Promise.all(chunks.map((chunk) => RobloxApiClient.fetchAssetThumbnails(chunk)));
-      if (generation !== requestGenerationRef.current) return;
-      const thumbnails = Object.assign({}, ...maps) as Record<number, string>;
-      if (Object.keys(thumbnails).length === 0) return;
-      setItems((current) => {
-        const hydrated = current.map((item) => thumbnails[item.id] ? { ...item, thumbnailUrl: thumbnails[item.id] } : item);
-        return hydrated;
-      });
-    } catch {
-      // Catalog content remains usable when a VPN blocks only thumbnails.
+      const results = await Promise.allSettled(chunks.map((chunk) => RobloxApiClient.fetchAssetThumbnails(chunk, signal)));
+      if (generation !== requestGenerationRef.current || signal?.aborted) return;
+      const thumbnails = Object.assign({}, ...results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])) as Record<number, string>;
+      if (Object.keys(thumbnails).length > 0) {
+        itemsRef.current = itemsRef.current.map((item) => thumbnails[item.id] ? { ...item, thumbnailUrl: thumbnails[item.id] } : item);
+        setItems(itemsRef.current);
+      }
+      missingIds = missingIds.filter((id) => !thumbnails[id]);
     }
   }, []);
 
@@ -212,7 +217,6 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     const generation = requestGenerationRef.current;
     const signal = catalogAbortRef.current?.signal;
     let cur: string | null = nextCursor;
-    const collected: RobloxAssetItem[] = [];
     const requestedCursors = new Set<string>();
     let failed = false;
     try {
@@ -240,21 +244,20 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
         }
         if (!res) throw new Error('Catalog page unavailable');
         if (generation !== requestGenerationRef.current) return;
-        collected.push(...res.items);
+        const existingIds = new Set(itemsRef.current.map((item) => item.id));
+        const newItems = res.items.filter((item) => !existingIds.has(item.id));
+        itemsRef.current = [...itemsRef.current, ...newItems];
+        setItems(itemsRef.current);
         cur = res.nextPageCursor;
+        setNextCursor(cur);
+        updateCatalogSummary(activeGroup.id, itemsRef.current, !cur);
+        if (newItems.length > 0) void hydrateThumbnails(newItems, generation);
         if (!cur) break;
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
     } catch {
       failed = true;
     } finally {
-      if (generation === requestGenerationRef.current && (collected.length > 0 || (!failed && !cur))) {
-        const mergedItems = Array.from(new Map([...itemsRef.current, ...collected].map((item) => [item.id, item])).values());
-        itemsRef.current = mergedItems;
-        setItems(mergedItems);
-        updateCatalogSummary(activeGroup.id, mergedItems, !failed && !cur);
-        if (collected.length > 0) void hydrateThumbnails(collected, generation);
-      }
       if (generation === requestGenerationRef.current) {
         setNextCursor(cur);
         if (!signal?.aborted) setHasError(failed);
@@ -282,6 +285,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
       paginationInFlightRef.current = false;
       setLoadingAll(false);
       setLoadingMore(false);
+      setFailedImageIds(new Set());
       setItems([]);
       setNextCursor(null);
       setHasError(false);
@@ -348,6 +352,17 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   }, [items, filterCategory, searchQuery, assetType, priceFilter]);
 
   const assetTypes = useMemo(() => Array.from(new Set(items.map((item) => item.assetTypeName).filter(Boolean))) as string[], [items]);
+  const missingImageCount = useMemo(() => items.filter((item) => !item.thumbnailUrl || failedImageIds.has(item.id)).length, [items, failedImageIds]);
+  const retryMissingImages = async () => {
+    if (retryingImages) return;
+    setRetryingImages(true);
+    setImageRetryKey((current) => current + 1);
+    try {
+      await hydrateThumbnails(itemsRef.current.filter((item) => !item.thumbnailUrl || failedImageIds.has(item.id)).map((item) => ({ ...item, thumbnailUrl: null })), requestGenerationRef.current);
+    } finally {
+      setRetryingImages(false);
+    }
+  };
   const sourceGroups = groupListSource === 'saved' ? savedGroups : groupListSource === 'viewed' ? viewedGroups : groups;
   const viewedGroupsById = useMemo(() => new Map(viewedGroups.map((entry) => [entry.id, entry])), [viewedGroups]);
   const filteredGroups = useMemo(() => sourceGroups.filter((storeGroup) => {
@@ -582,6 +597,9 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                   <GroupAnalysisSummary group={viewedGroupsById.get(currentGroup.id)} analyzing={loading || loadingAll || loadingMore} compact />
                   {hasError && nextCursor && !loading && !loadingAll && !loadingMore && (
                     <button type="button" onClick={() => void loadAllRemaining(false)} className="shrink-0 rounded-md border border-white/15 px-1.5 py-0.5 font-mono text-[10px] text-white/70 hover:border-white/30 hover:text-white">Retry analysis</button>
+                  )}
+                  {!nextCursor && (viewedGroupsById.get(currentGroup.id)?.unknownCount || 0) > 0 && !loading && !loadingAll && !loadingMore && (
+                    <button type="button" onClick={() => void fetchItems(true, '')} className="shrink-0 rounded-md border border-white/15 px-1.5 py-0.5 font-mono text-[10px] text-white/70 hover:border-white/30 hover:text-white">Retry analysis</button>
                   )}
                 </div>
               </div>
@@ -824,13 +842,30 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                 </p>
               </div>
             ) : (
+              <>
+              {missingImageCount > 0 && !loading && (
+                <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-white/55">
+                  <span>{missingImageCount} image{missingImageCount === 1 ? '' : 's'} unavailable</span>
+                  <button type="button" onClick={() => void retryMissingImages()} disabled={retryingImages} className="inline-flex shrink-0 items-center gap-1.5 text-white/80 hover:text-white disabled:opacity-50">
+                    <RefreshCw className={`h-3.5 w-3.5 ${retryingImages ? 'animate-spin' : ''}`} />
+                    Retry images
+                  </button>
+                </div>
+              )}
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
                 {filteredItems.map((item) => {
                   const wishlisted = isFavorite(item.id);
                   return (
                     <StoreItemCard
-                      key={item.id}
+                      key={`${item.id}:${imageRetryKey}`}
                       item={item}
+                      onImageError={() => setFailedImageIds((current) => new Set(current).add(item.id))}
+                      onImageLoad={() => setFailedImageIds((current) => {
+                        if (!current.has(item.id)) return current;
+                        const next = new Set(current);
+                        next.delete(item.id);
+                        return next;
+                      })}
                       isWishlisted={wishlisted}
                       onToggleWishlist={() => toggleFavorite(item, { id: activeGroup.id, name: activeGroup.name })}
                       isSelected={selectedIds.has(item.id)}
@@ -842,6 +877,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                   );
                 })}
               </div>
+              </>
             )}
 
             {/* Load More & Load All Buttons */}
@@ -910,6 +946,8 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
 
 interface StoreItemCardProps {
   item: RobloxAssetItem;
+  onImageError: () => void;
+  onImageLoad: () => void;
   isWishlisted: boolean;
   onToggleWishlist: () => void;
   isSelected: boolean;
@@ -919,9 +957,9 @@ interface StoreItemCardProps {
   onDragStart: () => void;
 }
 
-const StoreItemCard: React.FC<StoreItemCardProps> = ({ item, isWishlisted, onToggleWishlist, isSelected, isNew, selectionMode, onSelect, onDragStart }) => {
-  const [imageLoaded, setImageLoaded] = useState(false);
-  const [imageError, setImageError] = useState(false);
+const StoreItemCard: React.FC<StoreItemCardProps> = ({ item, onImageError, onImageLoad, isWishlisted, onToggleWishlist, isSelected, isNew, selectionMode, onSelect, onDragStart }) => {
+  const [loadedImageUrl, setLoadedImageUrl] = useState<string | null>(null);
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
 
   return (
     <div
@@ -974,16 +1012,16 @@ const StoreItemCard: React.FC<StoreItemCardProps> = ({ item, isWishlisted, onTog
 
       {/* Thumbnail Canvas */}
       <div className="relative aspect-square w-full rounded-lg sm:rounded-xl bg-black/40 border border-white/[0.04] overflow-hidden flex items-center justify-center p-1.5 sm:p-2 mb-1.5 group-hover:border-white/[0.12] transition-colors">
-        {item.thumbnailUrl && !imageError ? (
+        {item.thumbnailUrl && failedImageUrl !== item.thumbnailUrl ? (
           <img
             src={item.thumbnailUrl}
             alt={item.name}
             loading="lazy"
             referrerPolicy="no-referrer"
-            onLoad={() => setImageLoaded(true)}
-            onError={() => setImageError(true)}
+            onLoad={() => { setLoadedImageUrl(item.thumbnailUrl); onImageLoad(); }}
+            onError={() => { setFailedImageUrl(item.thumbnailUrl); onImageError(); }}
             className={`w-full h-full object-contain filter drop-shadow-[0_4px_10px_rgba(0,0,0,0.5)] transition-all duration-300 transform group-hover:scale-105 ${
-              imageLoaded ? 'opacity-100' : 'opacity-0'
+              loadedImageUrl === item.thumbnailUrl ? 'opacity-100' : 'opacity-0'
             }`}
           />
         ) : (

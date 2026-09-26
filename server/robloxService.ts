@@ -966,7 +966,11 @@ export class RobloxService {
       });
 
       const result = { items, nextPageCursor };
-      groupStoreCache.set(cacheKey, result);
+      // A temporary failure in catalog details must not freeze unknown item
+      // types (and therefore an incomplete store classification) for 5 minutes.
+      if (items.every((item) => typeof item.assetType === 'number')) {
+        groupStoreCache.set(cacheKey, result);
+      }
       return result;
     } catch (e) {
       console.warn('[RobloxService] getGroupStore error:', (e as Error).message);

@@ -417,7 +417,7 @@ app.post('/api/asset-thumbnails', async (req: Request, res: Response) => {
       Object.assign(thumbnails, await RobloxService.getAssetThumbnails(missingIds, ac.signal));
       missingIds = missingIds.filter((id) => !thumbnails[id]);
     }
-    res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=1800');
+    res.setHeader('Cache-Control', missingIds.length > 0 ? 'no-store' : 'public, max-age=300, stale-while-revalidate=1800');
     res.json({ thumbnails });
   } catch (e) {
     if ((e as Error).name === 'AbortError') return;

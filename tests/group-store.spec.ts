@@ -144,3 +144,41 @@ test('viewed stores remain usable on a narrow screen', async ({ page }) => {
   await expect(page.getByRole('dialog', { name: 'Viewed group stores' }).getByText('Accessory Club')).toBeVisible();
   await page.screenshot({ path: 'test-results/viewed-stores-mobile.png' });
 });
+
+test('missing store images can be retried without reopening the group', async ({ page }) => {
+  test.setTimeout(30000);
+  const group = { id: 501, name: 'Image Studio', memberCount: 2, hasVerifiedBadge: false, roleName: 'Member', roleRank: 1, iconUrl: null };
+  const imageUrl = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="32" height="32"%3E%3Crect width="32" height="32" fill="red"/%3E%3C/svg%3E';
+  let thumbnailRequests = 0;
+  await page.route('**/api/user/**', (route) => route.fulfill({
+    status: 200,
+    contentType: 'text/event-stream',
+    body: `event: done\ndata: ${JSON.stringify({
+      user: { id: 1, name: 'Alpha', displayName: 'Alpha', hasVerifiedBadge: false },
+      thumbnails: { fullBodyUrl: null, headshotUrl: null },
+      outfit: { totalValueRobux: 0, hasOffSaleItems: false, offSaleCount: 0, freeCount: 0, pricedCount: 0, itemCount: 0, items: [] },
+      groups: [group],
+      telemetry: { cached: false, timestamp: Date.now(), responseTimeMs: 1, wearingAssetCount: 0 },
+    })}\n\n`,
+  }));
+  await page.route(/\/api\/group\/501\/store/, (route) => route.fulfill({ json: {
+    items: [{ id: 5001, name: 'Red Shirt', description: '', assetType: 11, assetTypeName: 'Shirt', creatorName: 'Image Studio', price: 5, isForSale: true, isOffSale: false, isDeletedOrModerated: false, isFree: false, thumbnailUrl: null, studioLuaCommand: '', catalogUrl: 'https://www.roblox.com/catalog/5001' }],
+    nextPageCursor: null,
+  } }));
+  await page.route('**/api/asset-thumbnails', (route) => {
+    thumbnailRequests++;
+    return route.fulfill({ json: { thumbnails: thumbnailRequests > 3 ? { 5001: imageUrl } : {} } });
+  });
+
+  await page.goto('http://127.0.0.1:5173/');
+  const search = page.getByRole('textbox', { name: 'Roblox username, user ID, or profile link' });
+  await search.fill('Alpha');
+  await search.press('Enter');
+  await page.getByRole('tab', { name: /COMMUNITIES/ }).click();
+  await page.getByRole('button', { name: 'Browse Group Store' }).click({ force: true });
+  await expect(page.getByText('1 image unavailable')).toBeVisible();
+  await expect.poll(() => thumbnailRequests).toBe(3);
+  await page.getByRole('button', { name: 'Retry images' }).click();
+  await expect(page.getByRole('img', { name: 'Red Shirt' })).toHaveAttribute('src', imageUrl);
+  await expect(page.getByText('1 image unavailable')).toHaveCount(0);
+});
