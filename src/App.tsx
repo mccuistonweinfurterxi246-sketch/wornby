@@ -2,11 +2,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { RobloxUserProfileFull } from './types/roblox';
 import { RobloxApiClient } from './services/api';
 import { Stage1Hero } from './components/Stage1Hero';
-import { Stage2Inspector } from './components/Stage2Inspector';
 import { NoiseOverlay } from './components/NoiseOverlay';
 import { Toaster } from './components/ui/sonner';
 import { AudioHaptics } from './components/AudioHaptics';
 import { usePlayerHistory } from './hooks/usePlayerHistory';
+import { ViewedGroupsDrawer } from './components/ViewedGroupsDrawer';
+
+const Stage2Inspector = React.lazy(() => import('./components/Stage2Inspector').then((module) => ({ default: module.Stage2Inspector })));
 
 export const App: React.FC = () => {
   const [profileData, setProfileData] = useState<RobloxUserProfileFull | null>(null);
@@ -18,7 +20,7 @@ export const App: React.FC = () => {
   const searchSeqRef = React.useRef(0);
   const abortRef = React.useRef<AbortController | null>(null);
 
-  const handleSearch = useCallback(async (query: string, fresh = false) => {
+  const handleSearch = useCallback(async (query: string, fresh = false, historyMode: 'push' | 'replace' | 'none' = 'push') => {
     const seq = ++searchSeqRef.current;
     // abort previous
     abortRef.current?.abort();
@@ -53,7 +55,8 @@ export const App: React.FC = () => {
       // Update URL search query without page reload
       const url = new URL(window.location.href);
       url.searchParams.set('u', data.user.name);
-      window.history.pushState({}, '', url.toString());
+      if (historyMode === 'push') window.history.pushState({}, '', url.toString());
+      else if (historyMode === 'replace') window.history.replaceState({}, '', url.toString());
     } catch (err: unknown) {
       if ((err as { name?: string })?.name === 'AbortError' || (err as { code?: string })?.code === 'ERR_CANCELED') return;
       if (seq !== searchSeqRef.current) return;
@@ -74,6 +77,11 @@ export const App: React.FC = () => {
   }, [recordPlayer]);
 
   const handleBackToHero = useCallback(() => {
+    searchSeqRef.current++;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setIsLoading(false);
+    setStreamingValuation(null);
     setProfileData(null);
     setErrorMessage(null);
     const url = new URL(window.location.href);
@@ -86,12 +94,20 @@ export const App: React.FC = () => {
     const params = new URLSearchParams(window.location.search);
     const initialUser = params.get('u') || lastPlayer?.name || localStorage.getItem('wornby_last_roblox_username');
     if (initialUser && initialUser.trim()) {
-      handleSearch(initialUser.trim());
+      handleSearch(initialUser.trim(), false, 'replace');
     }
     const onPopState = () => {
       const u = new URLSearchParams(window.location.search).get('u');
-      if (u && u.trim()) handleSearch(u.trim());
-      else { abortRef.current?.abort(); setProfileData(null); setErrorMessage(null); }
+      if (u && u.trim()) handleSearch(u.trim(), false, 'none');
+      else {
+        searchSeqRef.current++;
+        abortRef.current?.abort();
+        abortRef.current = null;
+        setIsLoading(false);
+        setStreamingValuation(null);
+        setProfileData(null);
+        setErrorMessage(null);
+      }
     };
     window.addEventListener('popstate', onPopState);
     return () => { window.removeEventListener('popstate', onPopState); abortRef.current?.abort(); };
@@ -120,13 +136,16 @@ export const App: React.FC = () => {
           errorMessage={errorMessage}
         />
       ) : (
-        <Stage2Inspector
-          data={profileData}
-          onNewSearch={handleSearch}
-          onBackToHero={handleBackToHero}
-          isLoading={isLoading}
-        />
+        <React.Suspense fallback={<div className="p-6 text-center text-sm font-mono text-white/70" role="status">Loading inspector...</div>}>
+          <Stage2Inspector
+            data={profileData}
+            onNewSearch={handleSearch}
+            onBackToHero={handleBackToHero}
+            isLoading={isLoading}
+          />
+        </React.Suspense>
       )}
+      <ViewedGroupsDrawer />
       <Toaster />
     </div>
   );

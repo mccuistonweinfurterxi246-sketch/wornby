@@ -6,3 +6,6 @@ dist
 .env.*.local
 .DS_Store
 *.log
+.tools/
+graphify-out/
+test-results/

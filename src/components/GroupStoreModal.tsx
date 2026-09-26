@@ -5,6 +5,8 @@ import { RobloxAssetItem, RobloxGroupMembership } from '../types/roblox';
 import { RobloxApiClient } from '../services/api';
 import { useFavorites } from '../hooks/useFavorites';
 import { useClipboard } from '../hooks/useClipboard';
+import { useViewedGroups, ViewedGroupCategory } from '../hooks/useViewedGroups';
+import { GroupAnalysisSummary } from './GroupAnalysisSummary';
 import { QuickCopyStation } from './QuickCopyStation';
 import { Tooltip, TooltipMono } from './ui/tooltip';
 import { FALLBACK_GROUP_SVG } from '../lib/fallbacks';
@@ -29,7 +31,6 @@ import {
   Package,
   ArrowUpDown,
   Zap,
-  Folder,
   FolderPlus,
   Check,
 } from 'lucide-react';
@@ -47,8 +48,6 @@ interface GroupStoreModalProps {
 type FilterCategory = 'all' | 'on_sale' | 'free' | 'off_sale';
 type SortOption = 'RecentlyCreated' | 'PriceAsc' | 'PriceDesc';
 type PriceFilter = 'all' | 'free' | 'under100' | '100plus';
-type GroupStoreAvailability = 'checking' | 'has_items' | 'empty' | 'error';
-type StorePage = { items: RobloxAssetItem[]; nextPageCursor: string | null };
 
 const SELECTED_ITEMS_KEY = 'wornby_store_selected_items_v1';
 const STORE_VIEW_KEY = 'wornby_store_view_state_v1';
@@ -84,20 +83,9 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   onSaveGroup,
   onRemoveSavedGroup,
 }) => {
-  const availableGroups = useMemo(
-    () => {
-      const merged = new Map<number, RobloxGroupMembership>();
-      groups.forEach((candidate) => merged.set(candidate.id, candidate));
-      savedGroups.forEach((candidate) => {
-        if (!merged.has(candidate.id)) merged.set(candidate.id, candidate);
-      });
-      if (group && !merged.has(group.id)) merged.set(group.id, group as RobloxGroupMembership);
-      return Array.from(merged.values());
-    },
-    [groups, savedGroups, group]
-  );
+  const { viewedGroups, recordViewedGroup, updateCatalogSummary } = useViewedGroups();
   const [activeGroup, setActiveGroup] = useState<typeof group>(group);
-  const [groupListSource, setGroupListSource] = useState<'player' | 'saved'>('player');
+  const [groupListSource, setGroupListSource] = useState<'player' | 'saved' | 'viewed'>('player');
   const [items, setItems] = useState<RobloxAssetItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -115,10 +103,8 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   const [isGroupsOpen, setIsGroupsOpen] = useState(false);
   const [copyFormat, setCopyFormat] = useState<'comma' | 'space' | 'newline'>('comma');
   const [lastSelection, setLastSelection] = useState<RobloxAssetItem[] | null>(null);
-  const [loadedCounts, setLoadedCounts] = useState<Record<number, number>>({});
-  const [saleCounts, setSaleCounts] = useState<Record<number, number>>({});
-  const [groupAvailability, setGroupAvailability] = useState<Record<number, GroupStoreAvailability>>({});
   const [groupQuery, setGroupQuery] = useState('');
+  const [groupTypeFilter, setGroupTypeFilter] = useState<'all' | ViewedGroupCategory>('all');
   const [newItemIds, setNewItemIds] = useState<Set<number>>(new Set());
   const [isDragOverSelection, setIsDragOverSelection] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -128,28 +114,19 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   const seenBaselinesRef = useRef<Record<number, Set<number>>>({});
   const scrollPersistTimerRef = useRef<number | null>(null);
   const requestGenerationRef = useRef(0);
+  const catalogAbortRef = useRef<AbortController | null>(null);
   const paginationInFlightRef = useRef(false);
   const draggedItemRef = useRef<RobloxAssetItem | null>(null);
-  const groupAvailabilityRef = useRef<Record<number, GroupStoreAvailability>>({});
-  const storeCacheRef = useRef<Map<string, StorePage>>(new Map());
-  const storePrefetchesRef = useRef<Map<number, Promise<StorePage>>>(new Map());
   const autoLoadRequestRef = useRef('');
-  const activeGroupIdRef = useRef<number | null>(activeGroup?.id ?? null);
-  activeGroupIdRef.current = activeGroup?.id ?? null;
+  const itemsRef = useRef<RobloxAssetItem[]>([]);
+  const manualGroupSelectionRef = useRef(false);
 
   const { isFavorite, toggleFavorite } = useFavorites();
   const { copied, copy } = useClipboard();
 
-  const updateGroupAvailability = useCallback((groupId: number, status: GroupStoreAvailability) => {
-    groupAvailabilityRef.current[groupId] = status;
-    setGroupAvailability((current) => current[groupId] === status ? current : { ...current, [groupId]: status });
-  }, []);
-
   const hydrateThumbnails = useCallback(async (
     sourceItems: RobloxAssetItem[],
-    generation: number,
-    cacheKey: string,
-    cursor: string | null
+    generation: number
   ) => {
     const missingIds = sourceItems.filter((item) => !item.thumbnailUrl).map((item) => item.id);
     if (missingIds.length === 0) return;
@@ -162,7 +139,6 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
       if (Object.keys(thumbnails).length === 0) return;
       setItems((current) => {
         const hydrated = current.map((item) => thumbnails[item.id] ? { ...item, thumbnailUrl: thumbnails[item.id] } : item);
-        storeCacheRef.current.set(cacheKey, { items: hydrated, nextPageCursor: cursor });
         return hydrated;
       });
     } catch {
@@ -170,32 +146,15 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     }
   }, []);
 
-  const prefetchGroupStore = useCallback((groupId: number, signal?: AbortSignal): Promise<StorePage> => {
-    const cacheKey = `${groupId}:RecentlyCreated`;
-    const cached = storeCacheRef.current.get(cacheKey);
-    if (cached) return Promise.resolve(cached);
-
-    const pending = storePrefetchesRef.current.get(groupId);
-    if (pending) return pending;
-
-    const request = RobloxApiClient.fetchGroupStore(groupId, '', GROUP_STORE_PAGE_SIZE, 'RecentlyCreated', 'Desc', signal, true)
-      .then((result) => {
-        storeCacheRef.current.set(cacheKey, result);
-        updateGroupAvailability(groupId, result.items.length > 0 ? 'has_items' : 'empty');
-        setLoadedCounts((current) => ({ ...current, [groupId]: result.items.length }));
-        setSaleCounts((current) => ({ ...current, [groupId]: result.items.filter((item) => item.isForSale && !item.isFree).length }));
-        return result;
-      })
-      .finally(() => storePrefetchesRef.current.delete(groupId));
-    storePrefetchesRef.current.set(groupId, request);
-    return request;
-  }, [updateGroupAvailability]);
-
   const fetchItems = useCallback(
     async (isInitial = true, cursor = '') => {
       if (!activeGroup) return;
       if (!isInitial && paginationInFlightRef.current) return;
       const generation = isInitial ? ++requestGenerationRef.current : requestGenerationRef.current;
+      if (isInitial) {
+        catalogAbortRef.current?.abort();
+        catalogAbortRef.current = new AbortController();
+      }
       if (!isInitial) paginationInFlightRef.current = true;
       if (isInitial) {
         setLoading(true);
@@ -205,26 +164,6 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
       }
 
       try {
-        const cacheKey = `${activeGroup.id}:${sortOption}`;
-        if (isInitial && sortOption === 'RecentlyCreated') {
-          let cached = storeCacheRef.current.get(cacheKey);
-          const pending = storePrefetchesRef.current.get(activeGroup.id);
-          if (!cached && pending) {
-            try { cached = await pending; } catch {}
-          }
-          if (generation !== requestGenerationRef.current) return;
-          if (cached) {
-            setItems(cached.items);
-            setNextCursor(cached.nextPageCursor);
-            setLoadedCounts((prev) => ({ ...prev, [activeGroup.id]: cached.items.length }));
-            setSaleCounts((prev) => ({ ...prev, [activeGroup.id]: cached.items.filter((item) => item.isForSale && !item.isFree).length }));
-            updateGroupAvailability(activeGroup.id, cached.items.length > 0 ? 'has_items' : 'empty');
-            setHasError(false);
-            void hydrateThumbnails(cached.items, generation, cacheKey, cached.nextPageCursor);
-            return;
-          }
-        }
-
         const sortOrder = sortOption === 'PriceAsc' ? 'Asc' : 'Desc';
         const res = await RobloxApiClient.fetchGroupStore(
           activeGroup.id,
@@ -232,34 +171,29 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
           GROUP_STORE_PAGE_SIZE,
           sortOption,
           sortOrder,
-          undefined,
+          catalogAbortRef.current?.signal,
           true
         );
         if (generation !== requestGenerationRef.current) return;
         if (isInitial) {
+          itemsRef.current = res.items;
           setItems(res.items);
-          storeCacheRef.current.set(cacheKey, res);
         } else {
-          setItems((prev) => {
-            const existingIds = new Set(prev.map((i) => i.id));
-            const newItems = res.items.filter((i) => !existingIds.has(i.id));
-            const mergedItems = [...prev, ...newItems];
-            storeCacheRef.current.set(cacheKey, { items: mergedItems, nextPageCursor: res.nextPageCursor });
-            return mergedItems;
-          });
+          const existingIds = new Set(itemsRef.current.map((item) => item.id));
+          const mergedItems = [...itemsRef.current, ...res.items.filter((item) => !existingIds.has(item.id))];
+          itemsRef.current = mergedItems;
+          setItems(mergedItems);
         }
         setNextCursor(res.nextPageCursor);
-        setLoadedCounts((prev) => ({ ...prev, [activeGroup.id]: isInitial ? res.items.length : (prev[activeGroup.id] || 0) + res.items.length }));
-        setSaleCounts((prev) => ({ ...prev, [activeGroup.id]: isInitial ? res.items.filter((item) => item.isForSale && !item.isFree).length : (prev[activeGroup.id] || 0) + res.items.filter((item) => item.isForSale && !item.isFree).length }));
-        updateGroupAvailability(activeGroup.id, res.items.length > 0 || !isInitial ? 'has_items' : 'empty');
+        updateCatalogSummary(activeGroup.id, itemsRef.current, !res.nextPageCursor);
         setHasError(false);
-        void hydrateThumbnails(res.items, generation, cacheKey, res.nextPageCursor);
+        void hydrateThumbnails(res.items, generation);
       } catch {
         if (generation !== requestGenerationRef.current) return;
+        if (catalogAbortRef.current?.signal.aborted) return;
         toast.error('Failed to load group catalog items');
         if (isInitial) {
           setHasError(true);
-          updateGroupAvailability(activeGroup.id, 'error');
         }
       } finally {
         if (generation === requestGenerationRef.current) {
@@ -269,29 +203,42 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
         if (generation === requestGenerationRef.current) paginationInFlightRef.current = false;
       }
     },
-    [activeGroup, hydrateThumbnails, sortOption, updateGroupAvailability]
+    [activeGroup, hydrateThumbnails, sortOption, updateCatalogSummary]
   );
 
   const loadAllRemaining = useCallback(async (silent = false) => {
     if (!activeGroup || !nextCursor || loadingAll || loadingMore) return;
     setLoadingAll(true);
     const generation = requestGenerationRef.current;
-    const cacheKey = `${activeGroup.id}:${sortOption}`;
+    const signal = catalogAbortRef.current?.signal;
     let cur: string | null = nextCursor;
     const collected: RobloxAssetItem[] = [];
+    const requestedCursors = new Set<string>();
     let failed = false;
     try {
       const sortOrder = sortOption === 'PriceAsc' ? 'Asc' : 'Desc';
       while (cur) {
-        const res = await RobloxApiClient.fetchGroupStore(
-          activeGroup.id,
-          cur,
-          GROUP_STORE_PAGE_SIZE,
-          sortOption,
-          sortOrder,
-          undefined,
-          true
-        );
+        if (requestedCursors.has(cur)) throw new Error('Catalog repeated a page cursor');
+        requestedCursors.add(cur);
+        let res: Awaited<ReturnType<typeof RobloxApiClient.fetchGroupStore>> | undefined;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            res = await RobloxApiClient.fetchGroupStore(
+              activeGroup.id,
+              cur,
+              GROUP_STORE_PAGE_SIZE,
+              sortOption,
+              sortOrder,
+              signal,
+              true
+            );
+            break;
+          } catch (error) {
+            if (attempt === 1 || signal?.aborted || generation !== requestGenerationRef.current) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 500));
+          }
+        }
+        if (!res) throw new Error('Catalog page unavailable');
         if (generation !== requestGenerationRef.current) return;
         collected.push(...res.items);
         cur = res.nextPageCursor;
@@ -301,26 +248,40 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     } catch {
       failed = true;
     } finally {
-      if (generation === requestGenerationRef.current && collected.length > 0) {
-        const mergedItems = Array.from(new Map([...items, ...collected].map((item) => [item.id, item])).values());
+      if (generation === requestGenerationRef.current && (collected.length > 0 || (!failed && !cur))) {
+        const mergedItems = Array.from(new Map([...itemsRef.current, ...collected].map((item) => [item.id, item])).values());
+        itemsRef.current = mergedItems;
         setItems(mergedItems);
-        setLoadedCounts((prev) => ({ ...prev, [activeGroup.id]: mergedItems.length }));
-        setSaleCounts((prev) => ({ ...prev, [activeGroup.id]: mergedItems.filter((item) => item.isForSale && !item.isFree).length }));
-        storeCacheRef.current.set(cacheKey, { items: mergedItems, nextPageCursor: cur });
-        void hydrateThumbnails(mergedItems, generation, cacheKey, cur);
+        updateCatalogSummary(activeGroup.id, mergedItems, !failed && !cur);
+        if (collected.length > 0) void hydrateThumbnails(collected, generation);
       }
-      if (generation === requestGenerationRef.current) setNextCursor(cur);
-      setLoadingAll(false);
-      if (!silent) {
+      if (generation === requestGenerationRef.current) {
+        setNextCursor(cur);
+        if (!signal?.aborted) setHasError(failed);
+      }
+      if (generation === requestGenerationRef.current) setLoadingAll(false);
+      if (!silent && generation === requestGenerationRef.current && !signal?.aborted) {
         if (failed) toast.error('Partially loaded; click again to continue fetching.');
         else toast.success('Loaded all items from group catalog!');
       }
     }
-  }, [activeGroup, hydrateThumbnails, items, loadingAll, loadingMore, nextCursor, sortOption]);
+  }, [activeGroup, hydrateThumbnails, loadingAll, loadingMore, nextCursor, sortOption, updateCatalogSummary]);
 
   useEffect(() => {
-    if (isOpen && activeGroup) {
+    if (!isOpen) {
+      manualGroupSelectionRef.current = false;
+      requestGenerationRef.current++;
+      catalogAbortRef.current?.abort();
+      return;
+    }
+    if (activeGroup && (activeGroup.id === group?.id || manualGroupSelectionRef.current)) {
       autoLoadRequestRef.current = '';
+      requestGenerationRef.current++;
+      catalogAbortRef.current?.abort();
+      itemsRef.current = [];
+      paginationInFlightRef.current = false;
+      setLoadingAll(false);
+      setLoadingMore(false);
       setItems([]);
       setNextCursor(null);
       setHasError(false);
@@ -329,7 +290,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   }, [isOpen, activeGroup?.id, sortOption]);
 
   useEffect(() => {
-    if (!isOpen || !activeGroup || items.length === 0 || !nextCursor || loading || loadingAll || loadingMore) return;
+    if (!isOpen || !activeGroup || !nextCursor || loading || loadingAll || loadingMore) return;
     const requestKey = `${activeGroup.id}:${sortOption}:${nextCursor}`;
     if (autoLoadRequestRef.current === requestKey) return;
     autoLoadRequestRef.current = requestKey;
@@ -341,45 +302,13 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
       setActiveGroup(group);
       const belongsToPlayer = groups.some((candidate) => candidate.id === group.id);
       const belongsToSaved = savedGroups.some((candidate) => candidate.id === group.id);
-      setGroupListSource(!belongsToPlayer && belongsToSaved ? 'saved' : 'player');
+      setGroupListSource(belongsToPlayer ? 'player' : belongsToSaved ? 'saved' : 'viewed');
     }
   }, [isOpen, group, groups, savedGroups]);
 
   useEffect(() => {
-    if (!isOpen || availableGroups.length === 0) return;
-    const controller = new AbortController();
-
-    const initialStatuses = Object.fromEntries(availableGroups.map((candidate) => [
-      candidate.id,
-      groupAvailabilityRef.current[candidate.id] || 'checking',
-    ])) as Record<number, GroupStoreAvailability>;
-    groupAvailabilityRef.current = initialStatuses;
-    setGroupAvailability(initialStatuses);
-
-    const warmQueue = [...availableGroups].sort((left, right) => {
-      if (left.id === activeGroupIdRef.current) return -1;
-      if (right.id === activeGroupIdRef.current) return 1;
-      return 0;
-    });
-    let nextIndex = 0;
-    const worker = async () => {
-      while (!controller.signal.aborted) {
-        const candidate = warmQueue[nextIndex++];
-        if (!candidate) return;
-        updateGroupAvailability(candidate.id, 'checking');
-        try {
-          const page = await prefetchGroupStore(candidate.id, controller.signal);
-          if (controller.signal.aborted) return;
-          updateGroupAvailability(candidate.id, page.items.length > 0 ? 'has_items' : 'empty');
-        } catch {
-          if (!controller.signal.aborted) updateGroupAvailability(candidate.id, 'error');
-        }
-      }
-    };
-
-    void Promise.all([worker(), worker(), worker()]);
-    return () => controller.abort();
-  }, [availableGroups, isOpen, prefetchGroupStore, updateGroupAvailability]);
+    if (isOpen && activeGroup && (activeGroup.id === group?.id || manualGroupSelectionRef.current)) recordViewedGroup(activeGroup);
+  }, [isOpen, activeGroup?.id, recordViewedGroup]);
 
   // Handle ESC key to close
   useEffect(() => {
@@ -419,13 +348,17 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   }, [items, filterCategory, searchQuery, assetType, priceFilter]);
 
   const assetTypes = useMemo(() => Array.from(new Set(items.map((item) => item.assetTypeName).filter(Boolean))) as string[], [items]);
-  const sourceGroups = groupListSource === 'saved' ? savedGroups : groups;
+  const sourceGroups = groupListSource === 'saved' ? savedGroups : groupListSource === 'viewed' ? viewedGroups : groups;
+  const viewedGroupsById = useMemo(() => new Map(viewedGroups.map((entry) => [entry.id, entry])), [viewedGroups]);
   const filteredGroups = useMemo(() => sourceGroups.filter((storeGroup) => {
-    return storeGroup.name.toLowerCase().includes(groupQuery.toLowerCase().trim());
-  }), [sourceGroups, groupQuery]);
-  const visibleGroupCount = sourceGroups.length;
+    const category = viewedGroupsById.get(storeGroup.id)?.category || 'unknown';
+    return (groupTypeFilter === 'all' || category === groupTypeFilter)
+      && storeGroup.name.toLowerCase().includes(groupQuery.toLowerCase().trim());
+  }), [sourceGroups, viewedGroupsById, groupQuery, groupTypeFilter]);
+  const visibleGroupCount = filteredGroups.length;
   const playerStoreCount = groups.length;
   const savedStoreCount = savedGroups.length;
+  const viewedStoreCount = viewedGroups.length;
   const savedGroupIds = useMemo(() => new Set(savedGroups.map((storeGroup) => storeGroup.id)), [savedGroups]);
   const selectedIds = useMemo(() => new Set(selectedItems.map((item) => item.id)), [selectedItems]);
   const selectedTotal = useMemo(() => selectedItems.reduce((sum, item) => sum + (item.price && item.price > 0 ? item.price : 0), 0), [selectedItems]);
@@ -532,19 +465,6 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     if (!onRemoveSavedGroup) return;
     onRemoveSavedGroup(storeGroup.id);
     toast.success('Group removed', { description: `${storeGroup.name} removed from Saved stores` });
-  };
-
-  const groupStoreStatus = (storeGroup: RobloxGroupMembership) => {
-    const loaded = loadedCounts[storeGroup.id];
-    if (typeof loaded === 'number') {
-      return loaded === 0 ? 'No catalog items found' : `${loaded} loaded · ${saleCounts[storeGroup.id] || 0} for sale`;
-    }
-    const status = groupAvailability[storeGroup.id];
-    if (status === 'checking') return 'Checking store…';
-    if (status === 'has_items') return 'Ready to open';
-    if (status === 'empty') return 'No catalog items found';
-    if (status === 'error') return 'Network check failed · open to retry';
-    return 'Open store';
   };
 
   const dropDraggedItem = () => {
@@ -657,6 +577,12 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                     <span>Roblox Store</span>
                     <ExternalLink className="w-3 h-3" />
                   </a>
+                </div>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <GroupAnalysisSummary group={viewedGroupsById.get(currentGroup.id)} analyzing={loading || loadingAll || loadingMore} compact />
+                  {hasError && nextCursor && !loading && !loadingAll && !loadingMore && (
+                    <button type="button" onClick={() => void loadAllRemaining(false)} className="shrink-0 rounded-md border border-white/15 px-1.5 py-0.5 font-mono text-[10px] text-white/70 hover:border-white/30 hover:text-white">Retry analysis</button>
+                  )}
                 </div>
               </div>
             </div>
@@ -783,13 +709,12 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                   <span className="text-[10px] uppercase tracking-[0.18em] font-mono text-white/35">Group stores</span>
                   <span className="flex items-center gap-2"><span className="text-[10px] font-mono text-white/40">{visibleGroupCount} stores</span><button type="button" onClick={() => setIsGroupsOpen(false)} className="md:hidden text-white/40 hover:text-white" aria-label="Close groups"><X className="w-4 h-4" /></button></span>
                 </div>
-                <div className="mt-2 grid grid-cols-2 gap-1 rounded-xl bg-white/[0.035] p-1 ring-1 ring-inset ring-white/[0.07]">
+                <div className="mt-2 grid grid-cols-3 gap-1 rounded-xl bg-white/[0.035] p-1 ring-1 ring-inset ring-white/[0.07]">
                   <button
                     type="button"
                     onClick={() => setGroupListSource('player')}
                     className={`flex min-w-0 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-[10px] font-mono transition-colors ${groupListSource === 'player' ? 'bg-white text-black' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}
                   >
-                    <Users className="h-3.5 w-3.5 shrink-0" />
                     <span className="truncate">Player</span>
                     <span className="tabular-nums opacity-60">{playerStoreCount}</span>
                   </button>
@@ -798,12 +723,27 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                     onClick={() => setGroupListSource('saved')}
                     className={`flex min-w-0 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-[10px] font-mono transition-colors ${groupListSource === 'saved' ? 'bg-white text-black' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}
                   >
-                    <Folder className="h-3.5 w-3.5 shrink-0" />
                     <span className="truncate">Saved</span>
                     <span className="tabular-nums opacity-60">{savedStoreCount}</span>
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setGroupListSource('viewed')}
+                    className={`flex min-w-0 items-center justify-center gap-1 rounded-lg px-1 py-2 text-[10px] font-mono transition-colors ${groupListSource === 'viewed' ? 'bg-white text-black' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}
+                  >
+                    <span className="truncate">Viewed</span>
+                    <span className="tabular-nums opacity-60">{viewedStoreCount}</span>
+                  </button>
                 </div>
                 <div className="relative mt-2"><Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/30" /><input value={groupQuery} onChange={(event) => setGroupQuery(event.target.value)} placeholder="Find a group..." className="w-full rounded-lg border border-white/10 bg-white/[0.04] py-2 pl-8 pr-2 text-[11px] font-mono text-white placeholder:text-white/35 focus:border-white/35 focus:outline-none" /></div>
+                <select aria-label="Filter group stores" value={groupTypeFilter} onChange={(event) => setGroupTypeFilter(event.target.value as 'all' | ViewedGroupCategory)} className="mt-2 w-full rounded-lg border border-white/10 bg-neutral-900 px-2.5 py-2 text-[11px] font-mono text-white focus:border-white/35 focus:outline-none">
+                  <option value="all">All groups</option>
+                  <option value="clothing">Clothing</option>
+                  <option value="items">Items</option>
+                  <option value="mixed">Mixed</option>
+                  <option value="empty">Empty</option>
+                  <option value="unknown">To check</option>
+                </select>
               </div>
               <div className="flex-1 overflow-y-auto p-2 fancy-scroll">
                 {filteredGroups.map((storeGroup) => {
@@ -812,20 +752,18 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                     <div key={storeGroup.id} className={`mb-1 flex items-center rounded-xl transition-colors ${storeGroup.id === activeGroup.id ? 'bg-white/10 border border-white/25 text-white' : 'border border-transparent text-white/60 hover:bg-white/[0.05] hover:text-white'}`}>
                       <button
                         type="button"
-                        onClick={() => { if (storeGroup.id === activeGroup.id) void fetchItems(true, ''); else setActiveGroup(storeGroup); localStorage.setItem('wornby_last_store_group', String(storeGroup.id)); setIsGroupsOpen(false); }}
-                        onPointerEnter={() => { if (groupAvailability[storeGroup.id] !== 'empty') void prefetchGroupStore(storeGroup.id).catch(() => undefined); }}
-                        onFocus={() => { if (groupAvailability[storeGroup.id] !== 'empty') void prefetchGroupStore(storeGroup.id).catch(() => undefined); }}
+                        onClick={() => { if (storeGroup.id === activeGroup.id) void fetchItems(true, ''); else { catalogAbortRef.current?.abort(); requestGenerationRef.current++; manualGroupSelectionRef.current = true; setActiveGroup(storeGroup); } localStorage.setItem('wornby_last_store_group', String(storeGroup.id)); setIsGroupsOpen(false); }}
                         className="flex min-w-0 flex-1 items-center gap-2.5 p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/50"
                       >
                         {storeGroup.iconUrl ? <img src={storeGroup.iconUrl} alt="" className="w-8 h-8 rounded-lg object-cover bg-black/40" /> : <div className="w-8 h-8 rounded-lg bg-white/[0.06] flex items-center justify-center"><Store className="w-3.5 h-3.5 text-white/35" /></div>}
-                        <span className="min-w-0 flex-1"><span className="block truncate text-xs font-medium">{storeGroup.name}</span><span className={`block truncate text-[10px] font-mono mt-0.5 ${groupAvailability[storeGroup.id] === 'error' ? 'text-amber-300/75' : 'text-white/40'}`}>{groupStoreStatus(storeGroup)}</span></span>
+                        <span className="min-w-0 flex-1"><span className="block truncate text-xs font-medium">{storeGroup.name}</span><GroupAnalysisSummary group={viewedGroupsById.get(storeGroup.id)} analyzing={storeGroup.id === activeGroup.id && (loading || loadingAll || loadingMore)} compact /></span>
                         {storeGroup.id === activeGroup.id && <ChevronRight className="w-3.5 h-3.5 text-white shrink-0" />}
                       </button>
                       {groupListSource === 'player' && onSaveGroup && (
                         <Tooltip content={<TooltipMono label={isSavedGroup ? 'Saved group' : 'Save group'} hint={isSavedGroup ? 'Already in Saved stores' : 'Add to Saved stores'} />} side="right">
                           <button
                             type="button"
-                            onClick={() => saveGroupFromStore(storeGroup)}
+                            onClick={() => saveGroupFromStore(storeGroup as RobloxGroupMembership)}
                             disabled={isSavedGroup}
                             aria-label={isSavedGroup ? `${storeGroup.name} is saved` : `Save ${storeGroup.name}`}
                             className={`mr-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${isSavedGroup ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/[0.04] text-white/45 hover:border-white/25 hover:text-white'}`}
@@ -838,7 +776,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                         <Tooltip content={<TooltipMono label="Remove group" hint="Remove from Saved stores" />} side="right">
                           <button
                             type="button"
-                            onClick={() => removeGroupFromSaved(storeGroup)}
+                            onClick={() => removeGroupFromSaved(storeGroup as RobloxGroupMembership)}
                             aria-label={`Remove ${storeGroup.name} from saved groups`}
                             className="mr-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-white/35 transition-colors hover:border-rose-500/25 hover:bg-rose-500/10 hover:text-rose-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/70"
                           >
@@ -849,7 +787,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                     </div>
                   );
                 })}
-                {filteredGroups.length === 0 && <div className="px-3 py-8 text-center text-[11px] font-mono text-white/40">{groupListSource === 'saved' ? 'No saved group stores yet.' : 'No player group stores found.'}</div>}
+                {filteredGroups.length === 0 && <div className="px-3 py-8 text-center text-[11px] font-mono text-white/40">{sourceGroups.length > 0 ? 'No groups match this filter.' : groupListSource === 'saved' ? 'No saved group stores yet.' : groupListSource === 'viewed' ? 'No viewed group stores yet.' : 'No player group stores found.'}</div>}
               </div>
             </aside>
 
@@ -1113,7 +1051,7 @@ const FilterMenu: React.FC<FilterMenuProps> = ({ label, value, options, onChange
   useLayoutEffect(() => {
     if (!isOpen || !triggerRef.current) return;
     const trigger = triggerRef.current.getBoundingClientRect();
-    const menuHeight = Math.min(options.length * 40 + 8, 280);
+    const menuHeight = Math.min(options.length * 40 + 12, 280);
     const menuWidth = Math.max(trigger.width, 176);
     const left = Math.min(Math.max(8, trigger.left), window.innerWidth - menuWidth - 8);
     const openAbove = window.innerHeight - trigger.bottom < menuHeight + 8 && trigger.top > menuHeight + 8;
@@ -1122,7 +1060,7 @@ const FilterMenu: React.FC<FilterMenuProps> = ({ label, value, options, onChange
       left,
       top: openAbove ? Math.max(8, trigger.top - menuHeight - 6) : trigger.bottom + 6,
       width: menuWidth,
-      maxHeight: menuHeight,
+      maxHeight: options.length > 6 ? menuHeight : undefined,
       visibility: 'visible',
     });
   }, [isOpen, options.length]);
@@ -1134,16 +1072,14 @@ const FilterMenu: React.FC<FilterMenuProps> = ({ label, value, options, onChange
       if (!triggerRef.current?.contains(target) && !menuRef.current?.contains(target)) setIsOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setIsOpen(false); };
-    const closeOnViewportChange = () => setIsOpen(false);
+    const closeOnResize = () => setIsOpen(false);
     document.addEventListener('pointerdown', closeOnPointerDown);
     window.addEventListener('keydown', closeOnEscape);
-    window.addEventListener('resize', closeOnViewportChange);
-    window.addEventListener('scroll', closeOnViewportChange, true);
+    window.addEventListener('resize', closeOnResize);
     return () => {
       document.removeEventListener('pointerdown', closeOnPointerDown);
       window.removeEventListener('keydown', closeOnEscape);
-      window.removeEventListener('resize', closeOnViewportChange);
-      window.removeEventListener('scroll', closeOnViewportChange, true);
+      window.removeEventListener('resize', closeOnResize);
     };
   }, [isOpen]);
 
@@ -1168,7 +1104,7 @@ const FilterMenu: React.FC<FilterMenuProps> = ({ label, value, options, onChange
           role="listbox"
           aria-label={label}
           style={menuStyle}
-          className="z-[100] overflow-y-auto rounded-xl border border-white/20 bg-neutral-950 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.75)]"
+          className={`z-[100] rounded-xl border border-white/20 bg-neutral-950 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.75)] ${options.length > 6 ? 'overflow-y-auto' : 'overflow-visible'}`}
         >
           {options.map(([optionValue, optionLabel]) => (
             <button

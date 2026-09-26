@@ -193,7 +193,8 @@ const ASSET_TYPE_MAP: Record<number,string> = {
   61:'Emote Animation',64:'T-Shirt Accessory',65:'Shirt Accessory',66:'Pants Accessory',
   67:'Jacket Accessory',68:'Sweater Accessory',69:'Shorts Accessory',70:'Left Shoe Accessory',
   71:'Right Shoe Accessory',72:'Dress Skirt Accessory',76:'Eyebrow Accessory',77:'Eyelash Accessory',
-  78:'Mood Animation',79:'Dynamic Head',
+  78:'Mood Animation',79:'Dynamic Head',88:'Face Makeup',89:'Lip Makeup',
+  90:'Eye Makeup',92:'Avatar Background',
 };
 
 export class RobloxService {
@@ -800,7 +801,7 @@ export class RobloxService {
       const nextPageCursor = res.data?.nextPageCursor ?? null;
 
       if (!Array.isArray(rawItems) || rawItems.length === 0) {
-        return { items: [], nextPageCursor: null };
+        return { items: [], nextPageCursor };
       }
 
       const assetIds: number[] = [];
@@ -810,10 +811,15 @@ export class RobloxService {
       }
 
       if (assetIds.length === 0) {
-        return { items: [], nextPageCursor: null };
+        return { items: [], nextPageCursor };
       }
 
-      const needsDetails = !isDetailedSearch || !rawItems[0]?.name;
+      // The fast catalog response may omit assetType. Resolve missing types
+      // before the client classifies a store as clothing, items, or mixed.
+      const detailIds = !isDetailedSearch ? assetIds : rawItems.filter((raw: any) => {
+        const typeId = Number(raw.assetType ?? raw.assetTypeId);
+        return !raw?.name || !Number.isSafeInteger(typeId) || typeId <= 0;
+      }).map((raw: any) => Number(raw.id ?? raw.itemId)).filter((id: number) => Number.isSafeInteger(id) && id > 0);
 
       // Fast store responses do not wait for the heavy thumbnail service.
       // The client hydrates images independently after the catalog is visible.
@@ -821,8 +827,8 @@ export class RobloxService {
         includeThumbnails
           ? this.getAssetThumbnails(assetIds, signal).catch(() => ({} as Record<number, string>))
           : Promise.resolve({} as Record<number, string>),
-        needsDetails
-          ? this.getCatalogDetails(assetIds, signal).catch(() => new Map<number, Partial<RobloxAssetItem>>())
+        detailIds.length > 0
+          ? this.getCatalogDetails(detailIds, signal).catch(() => new Map<number, Partial<RobloxAssetItem>>())
           : Promise.resolve(new Map<number, Partial<RobloxAssetItem>>()),
       ]);
 
@@ -843,8 +849,10 @@ export class RobloxService {
         const isForSale = !isExplicitOffSale && (isFree || (typeof rawPrice === 'number' && rawPrice > 1));
         const isOffSale = isExplicitOffSale || (!isForSale && !isFree);
 
-        const rawType = raw.assetType || d?.assetType;
-        const assetTypeId = typeof rawType === 'number' ? rawType : (typeof rawType === 'string' ? parseInt(rawType, 10) : undefined);
+        const rawTypeId = Number(raw.assetType ?? raw.assetTypeId);
+        const detailTypeId = Number(d?.assetType);
+        const assetTypeId = Number.isSafeInteger(rawTypeId) && rawTypeId > 0
+          ? rawTypeId : Number.isSafeInteger(detailTypeId) && detailTypeId > 0 ? detailTypeId : undefined;
         const typeName = d?.assetTypeName || (typeof assetTypeId === 'number' && Number.isFinite(assetTypeId) ? (ASSET_TYPE_MAP[assetTypeId] || `Type ${assetTypeId}`) : 'Wearable');
 
         return {
