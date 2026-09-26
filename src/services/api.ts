@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { RobloxUserProfileFull, RobloxAssetItem } from '../types/roblox';
+import { RobloxUserProfileFull, RobloxAssetItem, RobloxSavedOutfit, RobloxSavedOutfitDetails } from '../types/roblox';
 
 const API_BASE = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') || '/api';
 
@@ -21,6 +21,18 @@ export interface RobloxUserSearchResult {
 }
 
 export class RobloxApiClient {
+  public static async fetchSavedOutfitDetails(outfitId: number, signal?: AbortSignal): Promise<RobloxSavedOutfitDetails> {
+    const response = await axios.get<RobloxSavedOutfitDetails>(`${API_BASE}/outfits/${outfitId}`, { timeout: 30000, signal });
+    return response.data;
+  }
+
+  public static async fetchSavedOutfits(userId: number, pageToken = '', signal?: AbortSignal): Promise<{ outfits: RobloxSavedOutfit[]; nextPageToken: string | null }> {
+    const response = await axios.get<{ outfits: RobloxSavedOutfit[]; nextPageToken: string | null }>(`${API_BASE}/users/${userId}/outfits`, {
+      params: { pageToken: pageToken || undefined }, timeout: 30000, signal,
+    });
+    return response.data;
+  }
+
   public static async searchUsers(keyword: string, signal?: AbortSignal): Promise<RobloxUserSearchResult[]> {
     const response = await axios.get<{ users: RobloxUserSearchResult[] }>(`${API_BASE}/users/search`, {
       params: { keyword: keyword.trim() },

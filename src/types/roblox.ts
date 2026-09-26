@@ -45,6 +45,26 @@ export interface RobloxGroupMembership {
   iconUrl: string | null;
 }
 
+export interface RobloxSavedOutfit {
+  id: number;
+  name: string;
+  thumbnailUrl: string | null;
+}
+
+export interface RobloxSavedOutfitAsset {
+  id: number;
+  name: string;
+  assetTypeName: string;
+  kind: 'clothing' | 'accessory' | 'gear';
+  thumbnailUrl: string | null;
+}
+
+export interface RobloxSavedOutfitDetails {
+  id: number;
+  name: string;
+  assets: RobloxSavedOutfitAsset[];
+}
+
 export interface RobloxUserProfileFull {
   user: RobloxUserResolve;
   thumbnails: RobloxAvatarThumbnails;

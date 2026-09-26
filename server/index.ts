@@ -654,6 +654,45 @@ app.post('/api/auth/discord/logout', (_req: Request, res: Response) => {
 });
 
 // Group snapshot for Copied Folder — memberCount + new items check (VPN-hedged)
+app.get('/api/outfits/:id', async (req: Request, res: Response) => {
+  const outfitId = Number(req.params.id);
+  if (!Number.isSafeInteger(outfitId) || outfitId <= 0) {
+    res.status(400).json({ error: 'Invalid outfit id' });
+    return;
+  }
+  const controller = new AbortController();
+  req.on('aborted', () => controller.abort());
+  res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+  try {
+    const result = await RobloxService.getSavedOutfitDetails(outfitId, controller.signal);
+    res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=600');
+    res.json(result);
+  } catch {
+    if (controller.signal.aborted) return;
+    res.status(502).json({ error: 'Outfit details are unavailable right now' });
+  }
+});
+
+app.get('/api/users/:id/outfits', async (req: Request, res: Response) => {
+  const userId = Number(req.params.id);
+  const token = typeof req.query.pageToken === 'string' ? req.query.pageToken : '';
+  if (!Number.isSafeInteger(userId) || userId <= 0 || token.length > 1024) {
+    res.status(400).json({ error: 'Invalid outfit request' });
+    return;
+  }
+  const controller = new AbortController();
+  req.on('aborted', () => controller.abort());
+  res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+  try {
+    const result = await RobloxService.getSavedOutfits(userId, token, controller.signal);
+    res.setHeader('Cache-Control', 'public, max-age=120, stale-while-revalidate=300');
+    res.json(result);
+  } catch (error) {
+    if (controller.signal.aborted) return;
+    res.status(502).json({ error: 'Saved outfits are unavailable right now' });
+  }
+});
+
 app.get('/api/group/:id', async (req: Request, res: Response) => {
   const raw = req.params.id?.trim();
   const gid = Number(raw);

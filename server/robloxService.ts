@@ -2,6 +2,7 @@ import axios, { AxiosError, AxiosInstance } from 'axios';
 import { LRUCache } from 'lru-cache';
 import http from 'node:http';
 import https from 'node:https';
+import { normalizeSavedOutfits, normalizeSavedOutfitAssets, SavedOutfit, SavedOutfitAsset } from './savedOutfits.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
 export interface RobloxUserResolve {
@@ -58,6 +59,8 @@ const groupStoreStatusCache = new LRUCache<number, { hasItems: boolean }>({
   max: 2000,
   ttl: 1000 * 60 * 10,
 });
+const savedOutfitsCache = new LRUCache<string, { outfits: SavedOutfit[]; nextPageToken: string | null }>({ max: 300, ttl: 1000 * 60 * 2 });
+const savedOutfitDetailsCache = new LRUCache<number, { id: number; name: string; assets: SavedOutfitAsset[] }>({ max: 500, ttl: 1000 * 60 * 5 });
 
 // ── 4️⃣ ETag caches for conditional GET (304) ────────────────────────
 const thumbEtagCache = new LRUCache<number, { etag: string; url: string }>({ max: 3000, ttl: 1000 * 60 * 10 });
@@ -327,6 +330,90 @@ export class RobloxService {
       if (headshotRes.status==='fulfilled' && (headshotRes.value as unknown as {data:{data:{imageUrl:string}[]}}).data?.data?.[0]?.imageUrl) headshotUrl=(headshotRes.value as unknown as {data:{data:{imageUrl:string}[]}}).data.data[0].imageUrl;
     } catch {}
     return { fullBodyUrl, headshotUrl };
+  }
+
+  public static async getSavedOutfits(userId: number, paginationToken = '', signal?: AbortSignal): Promise<{ outfits: SavedOutfit[]; nextPageToken: string | null }> {
+    const cacheKey = `${userId}:${paginationToken}`;
+    const cached = savedOutfitsCache.get(cacheKey);
+    if (cached) return cached;
+
+    const path = `/v2/avatar/users/${userId}/outfits`;
+    const params = { outfitType: 'Avatar', isEditable: true, itemsPerPage: 50, paginationToken: paginationToken || undefined };
+    let response;
+    try {
+      response = await withRetry(() => robloxAxios.get(`https://avatar.roblox.com${path}`, { params, timeout: 9000, signal }), 1);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      response = await withRetry(() => robloxAxios.get(`https://avatar.roproxy.com${path}`, { params, timeout: 9000, signal }), 1);
+    }
+    if (!Array.isArray(response.data?.data)) throw new Error('Invalid saved outfits response');
+    const outfits = normalizeSavedOutfits(response.data.data);
+    const nextPageToken = typeof response.data.paginationToken === 'string' && response.data.paginationToken
+      ? response.data.paginationToken : null;
+
+    let hasPendingThumbnails = false;
+    if (outfits.length > 0) {
+      try {
+        const fetchThumbnails = async (ids: number[]) => {
+          const params = { userOutfitIds: ids.join(','), size: '420x420', format: 'Png', isCircular: false };
+          try {
+            return await robloxAxios.get('https://thumbnails.roblox.com/v1/users/outfits', { params, timeout: 8000, signal });
+          } catch (error) {
+            if (signal?.aborted) throw error;
+            return robloxAxios.get('https://thumbnails.roproxy.com/v1/users/outfits', { params, timeout: 8000, signal });
+          }
+        };
+        const images = new Map<number, string>();
+        let pendingIds = outfits.map((outfit) => outfit.id);
+        for (let attempt = 0; attempt < 2 && pendingIds.length > 0; attempt++) {
+          if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 800));
+          const thumbnails = await fetchThumbnails(pendingIds);
+          pendingIds = [];
+          for (const image of Array.isArray(thumbnails.data?.data) ? thumbnails.data.data : []) {
+            if (image?.state === 'Completed' && typeof image.imageUrl === 'string' && image.imageUrl.startsWith('https://')) {
+              images.set(Number(image.targetId), image.imageUrl);
+            } else if (image?.state === 'Pending') {
+              pendingIds.push(Number(image.targetId));
+            }
+          }
+        }
+        hasPendingThumbnails = pendingIds.length > 0;
+        for (const outfit of outfits) outfit.thumbnailUrl = images.get(outfit.id) || null;
+      } catch {
+        // Names and outfit IDs are still available if thumbnails are blocked or pending.
+        hasPendingThumbnails = true;
+      }
+    }
+
+    const result = { outfits, nextPageToken };
+    if (!signal?.aborted) savedOutfitsCache.set(cacheKey, result, { ttl: hasPendingThumbnails ? 10000 : 1000 * 60 * 2 });
+    return result;
+  }
+
+  public static async getSavedOutfitDetails(outfitId: number, signal?: AbortSignal): Promise<{ id: number; name: string; assets: SavedOutfitAsset[] }> {
+    const cached = savedOutfitDetailsCache.get(outfitId);
+    if (cached) return cached;
+    const path = `/v3/outfits/${outfitId}/details`;
+    let response;
+    try {
+      response = await withRetry(() => robloxAxios.get(`https://avatar.roblox.com${path}`, { timeout: 9000, signal }), 1);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      response = await withRetry(() => robloxAxios.get(`https://avatar.roproxy.com${path}`, { timeout: 9000, signal }), 1);
+    }
+    if (!Array.isArray(response.data?.assets)) throw new Error('Invalid outfit details response');
+    const assets = normalizeSavedOutfitAssets(response.data.assets);
+    if (assets.length > 0) {
+      const images = await this.getAssetThumbnails(assets.map((asset) => asset.id), signal).catch(() => ({} as Record<number, string>));
+      for (const asset of assets) asset.thumbnailUrl = images[asset.id] || null;
+    }
+    const result = {
+      id: outfitId,
+      name: typeof response.data.name === 'string' ? response.data.name : `Fit #${outfitId}`,
+      assets,
+    };
+    if (!signal?.aborted) savedOutfitDetailsCache.set(outfitId, result);
+    return result;
   }
 
   // ── 4️⃣ ETag-aware asset thumbnails (304 = 0 bytes, 80% traffic saved) — на VPN ETag выключаем (дороже) ─

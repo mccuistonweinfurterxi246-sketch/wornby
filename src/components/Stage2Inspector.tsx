@@ -28,6 +28,7 @@ import {
   Award,
   RotateCcw,
   Heart,
+  Shirt,
 } from 'lucide-react';
 import { useCopiedGroupsFolder } from '../hooks/useCopiedGroupsFolder';
 import { CopiedGroupsFolder } from './CopiedGroupsFolder';
@@ -35,6 +36,8 @@ import { useFavorites } from '../hooks/useFavorites';
 import { GroupStoreModal } from './GroupStoreModal';
 import { FavoritesDrawer } from './FavoritesDrawer';
 import { PlayerSearch } from './PlayerSearch';
+
+const SavedOutfitsGallery = React.lazy(() => import('./SavedOutfitsGallery').then((module) => ({ default: module.SavedOutfitsGallery })));
 
 interface Stage2InspectorProps {
   data: RobloxUserProfileFull;
@@ -51,7 +54,7 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
   onBackToHero,
   isLoading,
 }) => {
-  const [activeTab, setActiveTab] = useState<'outfit' | 'groups'>('outfit');
+  const [activeTab, setActiveTab] = useState<'outfit' | 'fits' | 'groups'>('outfit');
   const [copiedAction, setCopiedAction] = useState<string | null>(null);
   const [groupSort, setGroupSort] = useState<GroupSortOption>('default');
 
@@ -515,19 +518,25 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
       {/* Tabs Navigation */}
       <Tabs value={activeTab} onValueChange={(val) => {
         AudioHaptics.playTabSelect();
-        setActiveTab(val as 'outfit' | 'groups');
+        setActiveTab(val as 'outfit' | 'fits' | 'groups');
       }} className="w-full">
         <section className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-white/[0.08] pb-4 gap-4">
+          <div className="max-w-full overflow-x-auto no-scrollbar">
           <TabsList>
             <TabsTrigger value="outfit" className="flex items-center gap-2">
               <Layers className="w-3.5 h-3.5" />
               <span>OUTFIT ITEMS ({outfit.itemCount})</span>
+            </TabsTrigger>
+            <TabsTrigger value="fits" className="flex items-center gap-2">
+              <Shirt className="w-3.5 h-3.5" />
+              <span>FITS</span>
             </TabsTrigger>
             <TabsTrigger value="groups" className="flex items-center gap-2">
               <Users className="w-3.5 h-3.5" />
               <span>COMMUNITIES ({groups.length})</span>
             </TabsTrigger>
           </TabsList>
+          </div>
 
           {outfit.offSaleCount > 0 && activeTab === 'outfit' && (
             <div className="flex items-center gap-1.5 text-xs font-mono text-amber-300 bg-amber-500/10 px-3 py-1 rounded-lg border border-amber-500/20">
@@ -558,6 +567,12 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
               </div>
             )}
           </section>
+        </TabsContent>
+
+        <TabsContent value="fits">
+          <React.Suspense fallback={<p role="status" className="py-12 text-center text-sm text-white/55">Loading fits…</p>}>
+            <SavedOutfitsGallery key={user.id} userId={user.id} />
+          </React.Suspense>
         </TabsContent>
 
         <TabsContent value="groups">
