@@ -39,7 +39,7 @@ function readViewedGroups(): ViewedGroup[] {
       category: entry.clothingCount > 0 && entry.itemCount > 0 ? 'mixed' as const : entry.category,
     } : {
       ...entry, category: 'unknown' as const, complete: false, tags: [], unknownCount: 0, analysisVersion: 0,
-    });
+    }).sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }) || a.id - b.id);
   } catch {
     return [];
   }

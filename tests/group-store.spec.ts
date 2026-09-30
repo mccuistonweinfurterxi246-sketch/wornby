@@ -145,6 +145,32 @@ test('viewed stores remain usable on a narrow screen', async ({ page }) => {
   await page.screenshot({ path: 'test-results/viewed-stores-mobile.png' });
 });
 
+test('viewed groups keep their positions while the active store changes', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('wornby_viewed_group_stores_v1', JSON.stringify([
+      { id: 202, name: 'Zeta Group', iconUrl: null, viewedAt: 2, category: 'unknown', clothingCount: 0, itemCount: 0, unknownCount: 0, totalCount: 0, complete: false, tags: [], analysisVersion: 2 },
+      { id: 201, name: 'Alpha Group', iconUrl: null, viewedAt: 1, category: 'unknown', clothingCount: 0, itemCount: 0, unknownCount: 0, totalCount: 0, complete: false, tags: [], analysisVersion: 2 },
+    ]));
+  });
+  await page.route(/\/api\/group\/\d+\/store/, (route) => route.fulfill({ json: { items: [], nextPageCursor: null } }));
+  await page.goto('http://127.0.0.1:5173/');
+  await page.getByRole('button', { name: 'Viewed group stores (2)' }).click();
+  const drawer = page.getByRole('dialog', { name: 'Viewed group stores' });
+  await expect(drawer.locator('.fancy-scroll > button').first()).toContainText('Alpha Group');
+  await drawer.getByRole('button', { name: /Zeta Group/ }).click();
+
+  const sidebar = page.getByRole('complementary').first();
+  const rows = sidebar.locator('.fancy-scroll > div');
+  await expect(rows.first()).toContainText('Alpha Group');
+  await expect(rows.nth(1)).toContainText('Zeta Group');
+  await expect(sidebar.getByRole('button', { name: /Zeta Group/ })).toHaveAttribute('aria-current', 'true');
+  await sidebar.getByRole('button', { name: /Alpha Group/ }).click();
+  await expect(rows.first()).toContainText('Alpha Group');
+  await expect(rows.nth(1)).toContainText('Zeta Group');
+  await expect(sidebar.getByRole('button', { name: /Alpha Group/ })).toHaveAttribute('aria-current', 'true');
+  await expect(sidebar.getByRole('button', { name: /Zeta Group/ })).not.toHaveAttribute('aria-current', 'true');
+});
+
 test('missing store images can be retried without reopening the group', async ({ page }) => {
   test.setTimeout(30000);
   const group = { id: 501, name: 'Image Studio', memberCount: 2, hasVerifiedBadge: false, roleName: 'Member', roleRank: 1, iconUrl: null };

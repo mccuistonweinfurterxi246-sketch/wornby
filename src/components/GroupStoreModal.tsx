@@ -21,7 +21,6 @@ import {
   ExternalLink,
   Heart,
   ChevronLeft,
-  ChevronRight,
   Copy,
   ListFilter,
   Undo2,
@@ -51,6 +50,7 @@ type PriceFilter = 'all' | 'free' | 'under100' | '100plus';
 
 const SELECTED_ITEMS_KEY = 'wornby_store_selected_items_v1';
 const STORE_VIEW_KEY = 'wornby_store_view_state_v1';
+const EMPTY_GROUPS: RobloxGroupMembership[] = [];
 // Roblox catalog cursors are tied to the page size that created them.
 // Keep this value identical for the first and every following page.
 // Roblox accepts up to 120 catalog items per page. Starting at the maximum
@@ -78,8 +78,8 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   isOpen,
   onClose,
   group,
-  groups = [],
-  savedGroups = [],
+  groups = EMPTY_GROUPS,
+  savedGroups = EMPTY_GROUPS,
   onSaveGroup,
   onRemoveSavedGroup,
 }) => {
@@ -767,15 +767,16 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                 {filteredGroups.map((storeGroup) => {
                   const isSavedGroup = savedGroupIds.has(storeGroup.id);
                   return (
-                    <div key={storeGroup.id} className={`mb-1 flex items-center rounded-xl transition-colors ${storeGroup.id === activeGroup.id ? 'bg-white/10 border border-white/25 text-white' : 'border border-transparent text-white/60 hover:bg-white/[0.05] hover:text-white'}`}>
+                    <div key={storeGroup.id} className={`mb-1 flex items-center rounded-xl transition-colors ${storeGroup.id === activeGroup.id ? 'bg-cyan-500/15 border border-cyan-400/60 text-white' : 'border border-transparent text-white/60 hover:bg-white/[0.05] hover:text-white'}`}>
                       <button
                         type="button"
+                        aria-current={storeGroup.id === activeGroup.id ? 'true' : undefined}
                         onClick={() => { if (storeGroup.id === activeGroup.id) void fetchItems(true, ''); else { catalogAbortRef.current?.abort(); requestGenerationRef.current++; manualGroupSelectionRef.current = true; setActiveGroup(storeGroup); } localStorage.setItem('wornby_last_store_group', String(storeGroup.id)); setIsGroupsOpen(false); }}
                         className="flex min-w-0 flex-1 items-center gap-2.5 p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/50"
                       >
                         {storeGroup.iconUrl ? <img src={storeGroup.iconUrl} alt="" className="w-8 h-8 rounded-lg object-cover bg-black/40" /> : <div className="w-8 h-8 rounded-lg bg-white/[0.06] flex items-center justify-center"><Store className="w-3.5 h-3.5 text-white/35" /></div>}
                         <span className="min-w-0 flex-1"><span className="block truncate text-xs font-medium">{storeGroup.name}</span><GroupAnalysisSummary group={viewedGroupsById.get(storeGroup.id)} analyzing={storeGroup.id === activeGroup.id && (loading || loadingAll || loadingMore)} compact /></span>
-                        {storeGroup.id === activeGroup.id && <ChevronRight className="w-3.5 h-3.5 text-white shrink-0" />}
+                        {storeGroup.id === activeGroup.id && <span className="shrink-0 text-[9px] font-mono font-bold uppercase tracking-wide text-cyan-300">Viewing</span>}
                       </button>
                       {groupListSource === 'player' && onSaveGroup && (
                         <Tooltip content={<TooltipMono label={isSavedGroup ? 'Saved group' : 'Save group'} hint={isSavedGroup ? 'Already in Saved stores' : 'Add to Saved stores'} />} side="right">
