@@ -6,6 +6,7 @@ import { RobloxApiClient } from '../services/api';
 import { useFavorites } from '../hooks/useFavorites';
 import { useClipboard } from '../hooks/useClipboard';
 import { useViewedGroups, ViewedGroupCategory } from '../hooks/useViewedGroups';
+import { classifyGroupItem } from '../lib/groupStoreAnalysis';
 import { GroupAnalysisSummary } from './GroupAnalysisSummary';
 import { QuickCopyStation } from './QuickCopyStation';
 import { Tooltip, TooltipMono } from './ui/tooltip';
@@ -45,6 +46,7 @@ interface GroupStoreModalProps {
 }
 
 type FilterCategory = 'all' | 'on_sale' | 'free' | 'off_sale';
+type CatalogKind = 'all' | 'clothing' | 'items';
 type SortOption = 'RecentlyCreated' | 'PriceAsc' | 'PriceDesc';
 type PriceFilter = 'all' | 'free' | 'under100' | '100plus';
 
@@ -66,7 +68,7 @@ function loadStoredItems(): RobloxAssetItem[] {
   } catch { return []; }
 }
 
-function loadStoreView(): { filters: Record<string, { searchQuery: string; filterCategory: FilterCategory; priceFilter: PriceFilter; assetType: string; scrollTop: number }> } {
+function loadStoreView(): { filters: Record<string, { searchQuery: string; filterCategory: FilterCategory; catalogKind?: CatalogKind; priceFilter: PriceFilter; assetType: string; scrollTop: number }> } {
   try {
     if (typeof window === 'undefined') return { filters: {} };
     const stored = JSON.parse(localStorage.getItem(STORE_VIEW_KEY) || '{"filters":{}}');
@@ -97,6 +99,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCategory, setFilterCategory] = useState<FilterCategory>('all');
+  const [catalogKind, setCatalogKind] = useState<CatalogKind>('all');
   const [sortOption, setSortOption] = useState<SortOption>('RecentlyCreated');
   const [priceFilter, setPriceFilter] = useState<PriceFilter>('all');
   const [assetType, setAssetType] = useState('all');
@@ -327,8 +330,17 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, isGroupsOpen, isSelectionOpen, onClose]);
 
+  const catalogCounts = useMemo(() => items.reduce((counts, item) => {
+    const kind = classifyGroupItem(item).kind;
+    if (kind === 'clothing' || kind === 'items') counts[kind]++;
+    return counts;
+  }, { clothing: 0, items: 0 }), [items]);
+  const kindItems = useMemo(() => catalogKind === 'all'
+    ? items
+    : items.filter((item) => classifyGroupItem(item).kind === catalogKind), [items, catalogKind]);
+
   const filteredItems = useMemo(() => {
-    return items.filter((item) => {
+    return kindItems.filter((item) => {
       // Category filter
       if (filterCategory === 'on_sale' && (!item.isForSale || item.isFree)) return false;
       if (filterCategory === 'free' && !item.isFree) return false;
@@ -349,9 +361,9 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
       }
       return true;
     });
-  }, [items, filterCategory, searchQuery, assetType, priceFilter]);
+  }, [kindItems, filterCategory, searchQuery, assetType, priceFilter]);
 
-  const assetTypes = useMemo(() => Array.from(new Set(items.map((item) => item.assetTypeName).filter(Boolean))) as string[], [items]);
+  const assetTypes = useMemo(() => Array.from(new Set(kindItems.map((item) => item.assetTypeName).filter(Boolean))) as string[], [kindItems]);
   const missingImageCount = useMemo(() => items.filter((item) => !item.thumbnailUrl || failedImageIds.has(item.id)).length, [items, failedImageIds]);
   const retryMissingImages = async () => {
     if (retryingImages) return;
@@ -404,12 +416,14 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     if (saved) {
       setSearchQuery(saved.searchQuery);
       setFilterCategory(saved.filterCategory);
+      setCatalogKind(saved.catalogKind || 'all');
       setPriceFilter(saved.priceFilter);
       setAssetType(saved.assetType);
       scrollPositions.current[activeGroup.id] = Number.isFinite(saved.scrollTop) ? saved.scrollTop : 0;
     } else {
       setSearchQuery('');
       setFilterCategory('all');
+      setCatalogKind('all');
       setPriceFilter('all');
       setAssetType('all');
       scrollPositions.current[activeGroup.id] = 0;
@@ -435,9 +449,9 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
 
   useEffect(() => {
     if (!activeGroup || !isOpen) return;
-    storeView.current.filters[activeGroup.id] = { searchQuery, filterCategory, priceFilter, assetType, scrollTop: scrollPositions.current[activeGroup.id] || 0 };
+    storeView.current.filters[activeGroup.id] = { searchQuery, filterCategory, catalogKind, priceFilter, assetType, scrollTop: scrollPositions.current[activeGroup.id] || 0 };
     try { localStorage.setItem(STORE_VIEW_KEY, JSON.stringify(storeView.current)); } catch {}
-  }, [activeGroup?.id, isOpen, searchQuery, filterCategory, priceFilter, assetType]);
+  }, [activeGroup?.id, isOpen, searchQuery, filterCategory, catalogKind, priceFilter, assetType]);
 
   const updateSelection = (next: RobloxAssetItem[]) => {
     setLastSelection(selectedItems);
@@ -513,9 +527,9 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     pendingScrollRestoreRef.current = null;
   }, [activeGroup?.id, items.length === 0]);
 
-  const onSaleCount = useMemo(() => items.filter((i) => i.isForSale && !i.isFree).length, [items]);
-  const freeCount = useMemo(() => items.filter((i) => i.isFree).length, [items]);
-  const offSaleCount = useMemo(() => items.filter((i) => !i.isForSale).length, [items]);
+  const onSaleCount = useMemo(() => kindItems.filter((i) => i.isForSale && !i.isFree).length, [kindItems]);
+  const freeCount = useMemo(() => kindItems.filter((i) => i.isFree).length, [kindItems]);
+  const offSaleCount = useMemo(() => kindItems.filter((i) => !i.isForSale).length, [kindItems]);
 
   if (!isOpen || !activeGroup) return null;
 
@@ -653,8 +667,27 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
               )}
             </div>
 
+            <div role="group" aria-label="Catalog type" className="grid grid-cols-3 gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1">
+              {([
+                ['all', 'All items', items.length],
+                ['clothing', 'Clothing', catalogCounts.clothing],
+                ['items', 'Items', catalogCounts.items],
+              ] as const).map(([kind, label, count]) => (
+                <button
+                  key={kind}
+                  type="button"
+                  aria-pressed={catalogKind === kind}
+                  onClick={() => { setCatalogKind(kind); setAssetType('all'); }}
+                  className={`flex h-9 min-w-0 items-center justify-center gap-1 rounded-lg px-2 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 sm:text-xs ${catalogKind === kind ? 'bg-white text-neutral-950' : 'text-white/65 hover:bg-white/[0.08] hover:text-white'}`}
+                >
+                  <span className="truncate">{label}</span>
+                  <span className={`tabular-nums ${catalogKind === kind ? 'text-neutral-500' : 'text-white/40'}`}>{count}</span>
+                </button>
+              ))}
+            </div>
+
             {/* Filter Pills & Sort Row */}
-            <div className="flex min-w-0 items-center gap-2 overflow-x-auto pb-1 no-scrollbar lg:justify-end lg:pb-0">
+            <div className="flex min-w-0 items-center gap-2 overflow-x-auto pb-1 no-scrollbar lg:col-span-2 lg:pb-0">
               {/* Category Pills */}
               <div className="flex items-center gap-1.5 shrink-0">
                 <button
@@ -666,7 +699,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                   }`}
                 >
                   <span>All</span>
-                  <span className="text-[10px] opacity-60">({items.length})</span>
+                  <span className="text-[10px] opacity-60">({kindItems.length})</span>
                 </button>
 
                 <button
@@ -712,7 +745,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
 
               {/* Sort Dropdown */}
               <FilterMenu label="Sort catalog" icon={<ArrowUpDown className="w-3.5 h-3.5" />} value={sortOption} options={[['RecentlyCreated', 'Newest'], ['PriceAsc', 'Price: Low to High'], ['PriceDesc', 'Price: High to Low']]} onChange={(value) => setSortOption(value as SortOption)} />
-              <FilterMenu label="Clothing type" value={assetType} options={[['all', 'All clothing'], ...assetTypes.map((type) => [type, type] as [string, string])]} onChange={setAssetType} />
+              <FilterMenu label="Asset type" value={assetType} options={[['all', 'All types'], ...assetTypes.map((type) => [type, type] as [string, string])]} onChange={setAssetType} />
               <FilterMenu label="Price range" value={priceFilter} options={ [['all', 'Any price'], ['free', 'Free'], ['under100', 'Under 100 R$'], ['100plus', '100+ R$']] } onChange={(value) => setPriceFilter(value as PriceFilter)} />
             </div>
             </div>
@@ -839,8 +872,13 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                 <p className="text-xs font-mono text-white/40 mt-1 max-w-sm">
                   {searchQuery
                     ? `No items matching "${searchQuery}" in this category.`
+                    : kindItems.length === 0 && catalogKind !== 'all'
+                      ? `No ${catalogKind === 'clothing' ? 'clothing' : 'other items'} found in this group.`
                     : 'This group does not have any items matching the selected filter.'}
                 </p>
+                {catalogKind !== 'all' && (
+                  <button type="button" onClick={() => { setCatalogKind('all'); setAssetType('all'); }} className="mt-4 rounded-lg border border-white/20 px-3 py-2 text-xs text-white/80 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300">Show all items</button>
+                )}
               </div>
             ) : (
               <>

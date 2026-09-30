@@ -67,13 +67,13 @@ test('only opened stores load and viewed classifications survive a reload', asyn
   await page.waitForTimeout(250);
   expect(requestedGroups).toEqual([101]);
 
-  await page.getByRole('button', { name: 'Clothing type' }).click();
-  const menu = page.getByRole('listbox', { name: 'Clothing type' });
+  await page.getByRole('button', { name: 'Asset type' }).click();
+  const menu = page.getByRole('listbox', { name: 'Asset type' });
   await expect(menu).toBeVisible();
   await menu.hover();
   await page.mouse.wheel(0, 200);
   await expect(menu).toBeVisible();
-  await page.getByRole('button', { name: 'Clothing type' }).click();
+  await page.getByRole('button', { name: 'Asset type' }).click();
   await page.getByRole('button', { name: 'Sort catalog' }).click();
   const sortMenu = page.getByRole('listbox', { name: 'Sort catalog' });
   await expect(sortMenu).toBeVisible();
@@ -169,6 +169,58 @@ test('viewed groups keep their positions while the active store changes', async 
   await expect(rows.nth(1)).toContainText('Zeta Group');
   await expect(sidebar.getByRole('button', { name: /Alpha Group/ })).toHaveAttribute('aria-current', 'true');
   await expect(sidebar.getByRole('button', { name: /Zeta Group/ })).not.toHaveAttribute('aria-current', 'true');
+});
+
+test('mixed group catalog separates clothing and items without hiding unclassified assets', async ({ page }) => {
+  const group = { id: 601, name: 'Mixed Studio', memberCount: 3, hasVerifiedBadge: false, roleName: 'Member', roleRank: 1, iconUrl: null };
+  const item = (id: number, name: string, assetType: number, assetTypeName: string) => ({
+    id, name, description: '', assetType, assetTypeName, creatorName: 'Mixed Studio', price: 5,
+    isForSale: true, isOffSale: false, isDeletedOrModerated: false, isFree: false,
+    thumbnailUrl: null, studioLuaCommand: '', catalogUrl: `https://www.roblox.com/catalog/${id}`,
+  });
+  await page.route('**/api/user/**', (route) => route.fulfill({
+    status: 200,
+    contentType: 'text/event-stream',
+    body: `event: done\ndata: ${JSON.stringify({
+      user: { id: 1, name: 'Alpha', displayName: 'Alpha', hasVerifiedBadge: false },
+      thumbnails: { fullBodyUrl: null, headshotUrl: null },
+      outfit: { totalValueRobux: 0, hasOffSaleItems: false, offSaleCount: 0, freeCount: 0, pricedCount: 0, itemCount: 0, items: [] },
+      groups: [group],
+      telemetry: { cached: false, timestamp: Date.now(), responseTimeMs: 1, wearingAssetCount: 0 },
+    })}\n\n`,
+  }));
+  await page.route(/\/api\/group\/601\/store/, (route) => route.fulfill({ json: {
+    items: [
+      item(6101, 'Classic Shirt', 11, 'Shirt'),
+      item(6102, 'Hair Accessory', 41, 'Hair Accessory'),
+      item(6103, 'Mystery Asset', 999, 'Mystery'),
+    ],
+    nextPageCursor: null,
+  } }));
+  await page.route('**/api/asset-thumbnails', (route) => route.fulfill({ json: { thumbnails: {} } }));
+
+  await page.goto('http://127.0.0.1:5173/');
+  const search = page.getByRole('textbox', { name: 'Roblox username, user ID, or profile link' });
+  await search.fill('Alpha');
+  await search.press('Enter');
+  await page.getByRole('tab', { name: /COMMUNITIES/ }).click();
+  await page.getByRole('button', { name: 'Browse Group Store' }).click({ force: true });
+
+  const catalogType = page.getByRole('group', { name: 'Catalog type' });
+  await expect(catalogType.getByRole('button', { name: 'All items 3' })).toHaveAttribute('aria-pressed', 'true');
+  await catalogType.getByRole('button', { name: 'Clothing 1' }).click();
+  await expect(page.getByRole('checkbox', { name: /Classic Shirt/ })).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: /Hair Accessory|Mystery Asset/ })).toHaveCount(0);
+  await catalogType.getByRole('button', { name: 'Items 1' }).click();
+  await expect(page.getByRole('checkbox', { name: /Hair Accessory/ })).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: /Classic Shirt|Mystery Asset/ })).toHaveCount(0);
+  await catalogType.getByRole('button', { name: 'All items 3' }).click();
+  await expect(page.getByRole('checkbox', { name: /Mystery Asset/ })).toBeVisible();
+  await page.screenshot({ path: 'test-results/mixed-store-filters-desktop.png' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(catalogType.getByRole('button', { name: 'Clothing 1' })).toBeVisible();
+  await expect(catalogType.getByRole('button', { name: 'Items 1' })).toBeVisible();
+  await page.screenshot({ path: 'test-results/mixed-store-filters-mobile.png' });
 });
 
 test('missing store images can be retried without reopening the group', async ({ page }) => {
