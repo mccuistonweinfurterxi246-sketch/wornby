@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Heart, UserRound } from 'lucide-react';
 import Balatro from './ui/Balatro';
@@ -6,7 +6,7 @@ import { useFavorites } from '../hooks/useFavorites';
 import { usePlayerHistory } from '../hooks/usePlayerHistory';
 import { PlayerSearch } from './PlayerSearch';
 import { FavoritesDrawer, GroupStoreModal, useMountedOnce } from './lazyPanels';
-import { fetchLinkedGroup, readStoreParam } from '../lib/urlParams';
+import { useStoreLink } from '../hooks/useStoreLink';
 
 interface Stage1HeroProps {
   onSearch: (query: string) => void;
@@ -22,15 +22,11 @@ export const Stage1Hero: React.FC<Stage1HeroProps> = ({ onSearch, isLoading, err
   const favoritesMounted = useMountedOnce(isFavoritesOpen);
   const storeMounted = useMountedOnce(!!storeModalGroup);
 
-  // ?store=<groupId> without a player opens that store straight from the start page
-  useEffect(() => {
-    const id = readStoreParam();
-    // with ?u= the profile view opens the store once the player loads
-    if (!id || new URLSearchParams(window.location.search).has('u')) return;
-    let cancelled = false;
-    fetchLinkedGroup(id).then((group) => { if (!cancelled) setStoreModalGroup(group); });
-    return () => { cancelled = true; };
-  }, []);
+  // ?store=<groupId> without a player opens that store straight from the start page;
+  // with ?u= the profile view opens it once the player loads
+  useStoreLink(storeModalGroup?.id ?? null, setStoreModalGroup, {
+    canOpen: () => !new URLSearchParams(window.location.search).has('u'),
+  });
 
   return (
     <div className="relative min-h-[100dvh] w-full flex flex-col items-center justify-center overflow-hidden px-4 sm:px-6">

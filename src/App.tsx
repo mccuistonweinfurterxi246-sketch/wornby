@@ -21,6 +21,9 @@ export const App: React.FC = () => {
   // race protection
   const searchSeqRef = React.useRef(0);
   const abortRef = React.useRef<AbortController | null>(null);
+  const profileRef = React.useRef(profileData);
+  profileRef.current = profileData;
+  const loadingQueryRef = React.useRef<string | null>(null);
 
   const handleSearch = useCallback(async (query: string, fresh = false, historyMode: 'push' | 'replace' | 'none' = 'push') => {
     const seq = ++searchSeqRef.current;
@@ -28,6 +31,7 @@ export const App: React.FC = () => {
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
+    loadingQueryRef.current = query;
     setIsLoading(true);
     setErrorMessage(null);
     setStreamingValuation(null);
@@ -77,7 +81,7 @@ export const App: React.FC = () => {
       setErrorMessage(msg);
       AudioHaptics.playErrorPulse();
     } finally {
-      if (seq === searchSeqRef.current) { setIsLoading(false); setStreamingValuation(null); }
+      if (seq === searchSeqRef.current) { loadingQueryRef.current = null; setIsLoading(false); setStreamingValuation(null); }
     }
   }, [recordPlayer]);
 
@@ -85,6 +89,7 @@ export const App: React.FC = () => {
     searchSeqRef.current++;
     abortRef.current?.abort();
     abortRef.current = null;
+    loadingQueryRef.current = null;
     setIsLoading(false);
     setStreamingValuation(null);
     setProfileData(null);
@@ -103,12 +108,26 @@ export const App: React.FC = () => {
       handleSearch(initialUser.trim(), false, 'replace');
     }
     const onPopState = () => {
-      const u = new URLSearchParams(window.location.search).get('u');
-      if (u && u.trim()) handleSearch(u.trim(), false, 'none');
+      const u = new URLSearchParams(window.location.search).get('u')?.trim();
+      const shown = profileRef.current?.user;
+      const isShown = (q: string) => !!shown && (q.toLowerCase() === shown.name.toLowerCase() || q === String(shown.id));
+      if (u && isShown(u)) {
+        // same player, only the tab or store changed (the inspector restores those): drop a load of another player
+        const loading = loadingQueryRef.current;
+        if (loading && !isShown(loading)) {
+          searchSeqRef.current++;
+          abortRef.current?.abort();
+          abortRef.current = null;
+          loadingQueryRef.current = null;
+          setIsLoading(false);
+          setStreamingValuation(null);
+        }
+      } else if (u) handleSearch(u, false, 'none');
       else {
         searchSeqRef.current++;
         abortRef.current?.abort();
         abortRef.current = null;
+        loadingQueryRef.current = null;
         setIsLoading(false);
         setStreamingValuation(null);
         setProfileData(null);

@@ -34,7 +34,8 @@ import { useCopiedGroupsFolder } from '../hooks/useCopiedGroupsFolder';
 import { CopiedGroupsFolder } from './CopiedGroupsFolder';
 import { useFavorites } from '../hooks/useFavorites';
 import { FavoritesDrawer, GroupStoreModal, useMountedOnce } from './lazyPanels';
-import { fetchLinkedGroup, readStoreParam, setUrlParam } from '../lib/urlParams';
+import { setUrlParam } from '../lib/urlParams';
+import { useStoreLink } from '../hooks/useStoreLink';
 import { PlayerSearch } from './PlayerSearch';
 
 const SavedOutfitsGallery = React.lazy(() => import('./SavedOutfitsGallery').then((module) => ({ default: module.SavedOutfitsGallery })));
@@ -78,19 +79,18 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
 
   const { user, thumbnails, outfit, groups, telemetry } = data;
 
-  // Open the store from a ?store= link once this player's groups are known.
-  useEffect(() => {
-    const id = readStoreParam();
-    if (!id) return;
-    const own = groups.find((g) => g.id === id);
-    if (own) { setStoreModalGroup(own); return; }
-    let cancelled = false;
-    fetchLinkedGroup(id).then((group) => { if (!cancelled) setStoreModalGroup(group); });
-    return () => { cancelled = true; };
-    // only on mount: later ?store= changes come from the modal itself
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // ?store= opens, switches or closes the store on load and on browser back/forward.
+  useStoreLink(storeModalGroup?.id ?? null, setStoreModalGroup, {
+    canOpen: () => true,
+    findGroup: (id) => groups.find((g) => g.id === id),
+  });
 
+  // Tabs are back/forward steps: switching pushes ?tab=, back/forward restores the tab from the URL.
+  useEffect(() => {
+    const onPopState = () => setActiveTab(readTabParam());
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
   useEffect(() => { setUrlParam('tab', activeTab === 'outfit' ? null : activeTab); }, [activeTab, user.id]);
 
   const copyTelemetryValue = async (text: string, actionKey: string) => {
@@ -112,9 +112,7 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
     }
   };
 
-  const handleSaveGroup = (group: RobloxGroupMembership) => {
-    folder.add(group, { name: data.user.name, id: data.user.id });
-  };
+  const handleSaveGroup = (group: RobloxGroupMembership) => folder.add(group, { name: data.user.name, id: data.user.id });
 
   const handleClearCopiedMemory = () => {
     AudioHaptics.playClearCache();

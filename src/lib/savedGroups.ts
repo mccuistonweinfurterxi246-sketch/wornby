@@ -22,3 +22,27 @@ export function mergeLegacyIds(entries: CopiedGroupEntry[], legacyIds: unknown, 
   }
   return added.length ? [...entries, ...added] : entries;
 }
+
+/** Puts a newly saved group first. No size limit: saved groups are only ever removed by the user. */
+export function addGroupEntry(entries: CopiedGroupEntry[], group: RobloxGroupMembership, source?: { name: string; id: number }, now = Date.now()): CopiedGroupEntry[] {
+  const existing = entries.find((e) => e.id === group.id);
+  if (existing && !existing.needsDetails) return entries;
+  const entry: CopiedGroupEntry = {
+    ...group,
+    copiedAt: now,
+    sourceUserName: source?.name,
+    sourceUserId: source?.id,
+    memberCountAtCopy: group.memberCount,
+  };
+  return [entry, ...entries.filter((e) => e.id !== group.id)];
+}
+
+/** Writes the folder and reports success; a failed write (storage full) leaves the stored value untouched. */
+export function writeSavedGroups(storage: Pick<Storage, 'setItem'>, key: string, entries: CopiedGroupEntry[]): boolean {
+  try {
+    storage.setItem(key, JSON.stringify(entries));
+    return true;
+  } catch {
+    return false;
+  }
+}

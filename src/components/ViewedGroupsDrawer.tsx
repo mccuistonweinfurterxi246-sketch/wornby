@@ -3,6 +3,7 @@ import { Search, Store, X } from 'lucide-react';
 import { GroupStoreModal, useMountedOnce } from './lazyPanels';
 import { GroupAnalysisSummary } from './GroupAnalysisSummary';
 import { ViewedGroup, ViewedGroupCategory, useViewedGroups } from '../hooks/useViewedGroups';
+import { useStoreLink } from '../hooks/useStoreLink';
 
 const FILTERS: { value: 'all' | ViewedGroupCategory; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -20,6 +21,8 @@ export const ViewedGroupsDrawer: React.FC = () => {
   const [filter, setFilter] = useState<'all' | ViewedGroupCategory>('all');
   const [query, setQuery] = useState('');
   const storeMounted = useMountedOnce(!!selectedGroup);
+  // back/forward away from this store closes it; reopening from a link is left to the page's own store view
+  useStoreLink(selectedGroup?.id ?? null, (group) => { if (!group) setSelectedGroup(null); }, { canOpen: () => false });
 
   const filteredGroups = useMemo(() => viewedGroups.filter((group) =>
     (filter === 'all' || group.category === filter) && group.name.toLowerCase().includes(query.trim().toLowerCase())

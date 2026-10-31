@@ -42,8 +42,8 @@ interface GroupStoreModalProps {
   group: RobloxGroupMembership | { id: number; name: string; memberCount?: number; iconUrl?: string | null; hasVerifiedBadge?: boolean } | null;
   groups?: RobloxGroupMembership[];
   savedGroups?: RobloxGroupMembership[];
-  onSaveGroup?: (group: RobloxGroupMembership) => void;
-  onRemoveSavedGroup?: (groupId: number) => void;
+  onSaveGroup?: (group: RobloxGroupMembership) => boolean;
+  onRemoveSavedGroup?: (groupId: number) => boolean;
 }
 
 type FilterCategory = 'all' | 'on_sale' | 'free' | 'off_sale';
@@ -346,11 +346,15 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     if (isOpen && activeGroup && (activeGroup.id === group?.id || manualGroupSelectionRef.current)) recordViewedGroup(activeGroup);
   }, [isOpen, activeGroup?.id, recordViewedGroup]);
 
-  // Keep ?store= pointing at the open store so the address bar is a shareable link.
+  // Keep ?store= pointing at the open store: opening and closing are back/forward steps, switching
+  // stores inside the modal just updates the link.
   const wasOpenRef = useRef(false);
   useEffect(() => {
-    if (isOpen && activeGroup) setStoreParam(activeGroup.id);
-    else if (!isOpen && wasOpenRef.current) setStoreParam(null);
+    if (isOpen && activeGroup) {
+      // skip the render where activeGroup still holds the previously opened store
+      if (activeGroup.id !== group?.id && !manualGroupSelectionRef.current) return;
+      setStoreParam(activeGroup.id, wasOpenRef.current ? 'replace' : 'push');
+    } else if (!isOpen && wasOpenRef.current) setStoreParam(null);
     wasOpenRef.current = isOpen;
   }, [isOpen, activeGroup?.id]);
 
@@ -548,13 +552,13 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
 
   const saveGroupFromStore = (storeGroup: RobloxGroupMembership) => {
     if (!onSaveGroup || savedGroupIds.has(storeGroup.id)) return;
-    onSaveGroup(storeGroup);
+    if (!onSaveGroup(storeGroup)) return;
     toast.success('Group saved', { description: `${storeGroup.name} added to Saved stores` });
   };
 
   const removeGroupFromSaved = (storeGroup: RobloxGroupMembership) => {
     if (!onRemoveSavedGroup) return;
-    onRemoveSavedGroup(storeGroup.id);
+    if (!onRemoveSavedGroup(storeGroup.id)) return;
     toast.success('Group removed', { description: `${storeGroup.name} removed from Saved stores` });
   };
 

@@ -13,7 +13,8 @@ interface GroupCardProps {
   group: RobloxGroupMembership;
   index: number;
   isSaved: boolean;
-  onSaveGroup: (group: RobloxGroupMembership) => void;
+  /** Returns false when the group could not be stored (the hook shows the error). */
+  onSaveGroup: (group: RobloxGroupMembership) => boolean;
   onOpenStore?: (group: RobloxGroupMembership) => void;
 }
 
@@ -28,9 +29,9 @@ export const GroupCard: React.FC<GroupCardProps> = ({
 
   const handleSaveGroup = () => {
     if (isSaved) return;
+    if (!onSaveGroup(group)) return;
     AudioHaptics.playCopyPunch();
     setSavedRecently(true);
-    onSaveGroup(group);
     toast.success('Group saved', { description: `${group.name} added to Saved stores` });
     setTimeout(() => setSavedRecently(false), 2200);
   };

@@ -1,15 +1,20 @@
 import { API_BASE } from '../services/api';
 
-/** Writes a deep-link param (tab, store) without adding a history entry. */
-export function setUrlParam(key: 'tab' | 'store', value: string | null) {
+/**
+ * Writes a deep-link param (tab, store). 'push' makes it a back/forward step. Does nothing when the URL
+ * already matches, so state restored from back/forward never rewrites the history it came from.
+ */
+export function setUrlParam(key: 'tab' | 'store', value: string | null, mode: 'push' | 'replace' = 'push') {
   const url = new URL(window.location.href);
   if (url.searchParams.get(key) === value) return;
   if (value === null) url.searchParams.delete(key);
   else url.searchParams.set(key, value);
-  window.history.replaceState(window.history.state, '', url.toString());
+  if (mode === 'push') window.history.pushState({}, '', url.toString());
+  else window.history.replaceState(window.history.state, '', url.toString());
 }
 
-export const setStoreParam = (groupId: number | null) => setUrlParam('store', groupId === null ? null : String(groupId));
+export const setStoreParam = (groupId: number | null, mode: 'push' | 'replace' = 'push') =>
+  setUrlParam('store', groupId === null ? null : String(groupId), mode);
 
 export function readStoreParam(): number | null {
   const id = Number(new URLSearchParams(window.location.search).get('store'));
