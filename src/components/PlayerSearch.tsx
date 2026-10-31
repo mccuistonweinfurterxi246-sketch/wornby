@@ -78,8 +78,9 @@ export const PlayerSearch: React.FC<PlayerSearchProps> = ({ onSearch, isLoading,
 
   return (
     <div className="relative w-full">
-      <form onSubmit={(event) => { event.preventDefault(); submit(); }} className={`relative flex items-center gap-2 ${isCompact ? 'rounded-xl' : 'rounded-2xl p-2 sm:p-2.5 bg-black/35 backdrop-blur-xl border border-white/[0.06] shadow-2xl'}`}>
-        <div className="relative flex-1 flex items-center min-w-0">
+      <form onSubmit={(event) => { event.preventDefault(); submit(); }} className={`relative flex gap-2 ${isCompact ? 'items-center rounded-xl' : 'flex-col sm:flex-row items-stretch sm:items-center rounded-2xl p-2 sm:p-2.5 bg-black/35 backdrop-blur-xl border border-white/[0.06] shadow-2xl'}`}>
+        {/* hero: the full-width INSPECT button sits under the input on phones instead of squeezing it */}
+        <div className={`relative flex items-center min-w-0 ${isCompact ? 'flex-1' : 'sm:flex-1'}`}>
           <Search className="absolute left-3.5 w-4 h-4 text-white/35 pointer-events-none" />
           <input
             ref={inputRef}

@@ -65,7 +65,8 @@ export const Stage1Hero: React.FC<Stage1HeroProps> = ({ onSearch, isLoading, err
       </div>
 
       {/* Floating Center Search Station (Zero Clutter / Richard Sancho Aesthetic) */}
-      <div className="relative z-10 w-full max-w-xl flex flex-col items-center">
+      {/* above the floating "Viewed stores" button (z-40) so open suggestions are never covered; drawers/modals use z-50+ */}
+      <div className="relative z-[45] w-full max-w-xl flex flex-col items-center">
         {/* Syntax3 Logo */}
         <motion.div 
           className="mb-6 sm:mb-8 flex items-center justify-center w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-black/40 backdrop-blur-xl shadow-2xl border border-white/10 pointer-events-none select-none relative overflow-hidden"
