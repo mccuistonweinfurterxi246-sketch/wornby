@@ -18,18 +18,22 @@ app.use((_req, res, next) => {
 // CORS — restrict to allowed origins. In production, ALLOWED_ORIGINS must be set, else deny cross-origin (allow same-origin/no-origin only)
 const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',').map((o) => o.trim()).filter(Boolean);
 const isProd = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
-app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin) return cb(null, true); // same-origin / curl / health checks
-    if (allowedOrigins && allowedOrigins.length > 0) {
-      if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) return cb(null, true);
-      return cb(new Error(`CORS blocked for origin: ${origin}`));
-    }
-    // No allowlist configured: allow in dev, deny cross-origin in prod
-    if (isProd) return cb(new Error(`CORS blocked for origin: ${origin}`));
-    return cb(null, true);
-  },
-}));
+function isAllowedOrigin(origin: string | undefined, host: string | undefined): boolean {
+  if (!origin) return true; // same-origin GET / curl / health checks
+  // Browsers also send Origin on same-origin POSTs; the site's own origin is never cross-origin.
+  try { if (host && new URL(origin).host === host) return true; } catch { return false; }
+  if (allowedOrigins && allowedOrigins.length > 0) return allowedOrigins.includes(origin) || allowedOrigins.includes('*');
+  // No allowlist configured: allow in dev, deny cross-origin in prod
+  return !isProd;
+}
+app.use((req, res, next) => {
+  if (!isAllowedOrigin(req.headers.origin, req.headers.host)) {
+    res.status(403).json({ error: 'Origin not allowed' });
+    return;
+  }
+  next();
+});
+app.use(cors({ origin: true })); // only allowed origins reach this point
 app.use(express.json({ limit: '50kb' }));
 
 // Simple in-memory rate limiter (no extra dep)
