@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { RobloxGroupMembership } from '../types/roblox';
+import { API_BASE } from '../services/api';
 
 export interface CopiedGroupEntry extends RobloxGroupMembership {
   copiedAt: number;
@@ -86,8 +87,8 @@ export function useCopiedGroupsFolder() {
         batch.map(async (entry) => {
           try {
             const [grpRes, itemsRes] = await Promise.all([
-              fetch(`/api/roblox/group/${entry.id}`).then(r => (r.ok ? r.json() : null)).catch(() => null),
-              fetch(`/api/roblox/group/${entry.id}/new-items?limit=5`).then(r => (r.ok ? r.json() : null)).catch(() => null),
+              fetch(`${API_BASE}/group/${entry.id}`).then(r => (r.ok ? r.json() : null)).catch(() => null),
+              fetch(`${API_BASE}/group/${entry.id}/new-items?limit=5`).then(r => (r.ok ? r.json() : null)).catch(() => null),
             ]);
 
             const currentMembers = typeof grpRes?.memberCount === 'number' ? grpRes.memberCount : entry.memberCount;

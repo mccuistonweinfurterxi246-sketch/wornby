@@ -9,12 +9,6 @@
       "includeFiles": "server/**"
     }
   },
-  "crons": [
-    {
-      "path": "/api/cron/check",
-      "schedule": "0 0 * * *"
-    }
-  ],
   "headers": [
     {
       "source": "/(.*)",

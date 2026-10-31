@@ -1,7 +1,14 @@
 import axios from 'axios';
 import { RobloxUserProfileFull, RobloxAssetItem, RobloxSavedOutfit, RobloxSavedOutfitDetails } from '../types/roblox';
 
-const API_BASE = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') || '/api';
+export const API_BASE = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') || '/api';
+
+// Same shape as an axios error so callers map stream and JSON failures the same way.
+class ProfileRequestError extends Error {
+  constructor(message: string, public response: { status: number; data: { error: string } }) {
+    super(message);
+  }
+}
 
 export type StreamEvent =
   | { event: 'user'; data: { user: RobloxUserProfileFull['user'] } }
@@ -88,10 +95,13 @@ export class RobloxApiClient {
         headers: { 'Accept': 'text/event-stream' },
         signal,
       });
-      if (!res.ok || !res.body) {
-        // fallback to JSON
-        return this.fetchUserProfile(query, fresh, signal);
+      if (!res.ok) {
+        // the server already ran the lookup and answered with a real status — don't repeat it over JSON
+        const body = await res.json().catch(() => null) as { error?: string } | null;
+        const message = body?.error || `Request failed with status code ${res.status}`;
+        throw new ProfileRequestError(message, { status: res.status, data: { error: message } });
       }
+      if (!res.body) return this.fetchUserProfile(query, fresh, signal);
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -117,6 +127,11 @@ export class RobloxApiClient {
           }
           if (!dataRaw) continue;
           const data = tryParse(dataRaw);
+          if (event === 'error') {
+            const { error, status } = (data || {}) as { error?: string; status?: number };
+            const message = error || 'Failed to retrieve Roblox profile.';
+            throw new ProfileRequestError(message, { status: status || 500, data: { error: message } });
+          }
           if (event === 'done' && data && (data as RobloxUserProfileFull).user) {
             fullProfile = data as RobloxUserProfileFull;
             onEvent({ event: 'done', data } as StreamEvent);
@@ -130,7 +145,7 @@ export class RobloxApiClient {
       // если done не пришёл — fallback
       return this.fetchUserProfile(query, fresh, signal);
     } catch (err) {
-      if ((err as { name?: string })?.name === 'AbortError') throw err;
+      if ((err as { name?: string })?.name === 'AbortError' || err instanceof ProfileRequestError) throw err;
       // сетевой сбой SSE — fallback к JSON
       try { return await this.fetchUserProfile(query, fresh, signal); } catch { throw err; }
     }

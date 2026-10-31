@@ -187,12 +187,12 @@ const Balatro = React.memo(function Balatro({
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null;
     ro?.observe(container);
     window.addEventListener('resize', resize, { passive: true } as AddEventListenerOptions);
-    // visibility: pause when tab hidden or container offscreen
-    const onVis = () => { isVisible = document.visibilityState === 'visible'; if (isVisible && !destroyed && !reduceMotion) animationFrameId = requestAnimationFrame(update); };
+    // visibility: pause when tab hidden or container offscreen — the single rAF loop keeps running and skips rendering,
+    // so these handlers only flip the flag (re-requesting a frame here started an extra loop each time)
+    const onVis = () => { isVisible = document.visibilityState === 'visible'; };
     document.addEventListener('visibilitychange', onVis);
     const io = typeof IntersectionObserver !== 'undefined' ? new IntersectionObserver((entries) => {
       isVisible = entries[0]?.isIntersecting ?? true;
-      if (isVisible && !destroyed && !reduceMotion) animationFrameId = requestAnimationFrame(update);
     }, { threshold: 0 }) : null;
     io?.observe(container);
     resize();

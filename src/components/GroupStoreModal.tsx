@@ -76,6 +76,23 @@ function loadStoreView(): { filters: Record<string, { searchQuery: string; filte
   } catch { return { filters: {} }; }
 }
 
+const SEEN_KEY_PREFIX = 'wornby_store_seen_';
+
+// "Seen item" lists are the only per-group keys that grow without bound. When storage is full,
+// drop the other groups' lists (they only drive "New" badges) so favorites and history keep saving.
+function writeSeenIds(seenKey: string, ids: number[]) {
+  const value = JSON.stringify(ids);
+  try {
+    localStorage.setItem(seenKey, value);
+  } catch {
+    for (let index = localStorage.length - 1; index >= 0; index--) {
+      const key = localStorage.key(index);
+      if (key && key.startsWith(SEEN_KEY_PREFIX) && key !== seenKey) localStorage.removeItem(key);
+    }
+    localStorage.setItem(seenKey, value);
+  }
+}
+
 export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   isOpen,
   onClose,
@@ -118,6 +135,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   const pendingScrollRestoreRef = useRef<{ groupId: number; top: number } | null>(null);
   const storeView = useRef(loadStoreView());
   const seenBaselinesRef = useRef<Record<number, Set<number>>>({});
+  const seenSizesRef = useRef<Record<string, number>>({});
   const scrollPersistTimerRef = useRef<number | null>(null);
   const requestGenerationRef = useRef(0);
   const catalogAbortRef = useRef<AbortController | null>(null);
@@ -436,14 +454,20 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
 
   useEffect(() => {
     if (!activeGroup) return;
-    const seenKey = `wornby_store_seen_${activeGroup.id}`;
+    const seenKey = `${SEEN_KEY_PREFIX}${activeGroup.id}`;
     try {
       if (!seenBaselinesRef.current[activeGroup.id]) {
         seenBaselinesRef.current[activeGroup.id] = new Set<number>(JSON.parse(localStorage.getItem(seenKey) || '[]'));
       }
       const baseline = seenBaselinesRef.current[activeGroup.id];
-      setNewItemIds(new Set(baseline.size > 0 ? items.filter((item) => !baseline.has(item.id)).map((item) => item.id) : []));
-      localStorage.setItem(seenKey, JSON.stringify(Array.from(new Set([...baseline, ...items.map((item) => item.id)]))));
+      const unseenIds = items.filter((item) => !baseline.has(item.id)).map((item) => item.id);
+      setNewItemIds(new Set(baseline.size > 0 ? unseenIds : []));
+      // Thumbnail updates replace `items` without adding IDs — only write when the stored set would grow.
+      const seen = Array.from(new Set([...baseline, ...unseenIds]));
+      if (seen.length > (seenSizesRef.current[seenKey] ?? -1)) {
+        writeSeenIds(seenKey, seen);
+        seenSizesRef.current[seenKey] = seen.length;
+      }
     } catch { setNewItemIds(new Set()); }
   }, [activeGroup?.id, items]);
 
@@ -470,6 +494,25 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     }
     updateSelection(selectedIds.has(item.id) ? selectedItems.filter((selected) => selected.id !== item.id) : selectedItems.concat(item));
   };
+
+  // Latest handlers for the memoized store cards: card callbacks stay stable, so unchanged cards skip re-rendering.
+  const cardHandlersRef = useRef<{ toggleSelection: typeof toggleSelection; toggleWishlist: (item: RobloxAssetItem) => void } | null>(null);
+  cardHandlersRef.current = {
+    toggleSelection,
+    toggleWishlist: (item) => { if (activeGroup) toggleFavorite(item, { id: activeGroup.id, name: activeGroup.name }); },
+  };
+  const cardActions = useMemo<StoreItemCardActions>(() => ({
+    onSelect: (item, shiftKey) => cardHandlersRef.current?.toggleSelection(item, shiftKey),
+    onToggleWishlist: (item) => cardHandlersRef.current?.toggleWishlist(item),
+    onDragStart: (item) => { draggedItemRef.current = item; },
+    onImageError: (id) => setFailedImageIds((current) => new Set(current).add(id)),
+    onImageLoad: (id) => setFailedImageIds((current) => {
+      if (!current.has(id)) return current;
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    }),
+  }), []);
 
   const copySelected = async () => {
     const separator = copyFormat === 'comma' ? ', ' : copyFormat === 'space' ? ' ' : '\n';
@@ -898,20 +941,11 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                     <StoreItemCard
                       key={`${item.id}:${imageRetryKey}`}
                       item={item}
-                      onImageError={() => setFailedImageIds((current) => new Set(current).add(item.id))}
-                      onImageLoad={() => setFailedImageIds((current) => {
-                        if (!current.has(item.id)) return current;
-                        const next = new Set(current);
-                        next.delete(item.id);
-                        return next;
-                      })}
+                      actions={cardActions}
                       isWishlisted={wishlisted}
-                      onToggleWishlist={() => toggleFavorite(item, { id: activeGroup.id, name: activeGroup.name })}
                       isSelected={selectedIds.has(item.id)}
                       isNew={newItemIds.has(item.id)}
                       selectionMode={selectionMode}
-                      onSelect={(shiftKey) => toggleSelection(item, shiftKey)}
-                      onDragStart={() => { draggedItemRef.current = item; }}
                     />
                   );
                 })}
@@ -983,20 +1017,24 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   );
 };
 
+interface StoreItemCardActions {
+  onImageError: (id: number) => void;
+  onImageLoad: (id: number) => void;
+  onToggleWishlist: (item: RobloxAssetItem) => void;
+  onSelect: (item: RobloxAssetItem, shiftKey: boolean) => void;
+  onDragStart: (item: RobloxAssetItem) => void;
+}
+
 interface StoreItemCardProps {
   item: RobloxAssetItem;
-  onImageError: () => void;
-  onImageLoad: () => void;
+  actions: StoreItemCardActions;
   isWishlisted: boolean;
-  onToggleWishlist: () => void;
   isSelected: boolean;
   isNew: boolean;
   selectionMode: boolean;
-  onSelect: (shiftKey: boolean) => void;
-  onDragStart: () => void;
 }
 
-const StoreItemCard: React.FC<StoreItemCardProps> = ({ item, onImageError, onImageLoad, isWishlisted, onToggleWishlist, isSelected, isNew, selectionMode, onSelect, onDragStart }) => {
+const StoreItemCard = React.memo(function StoreItemCard({ item, actions, isWishlisted, isSelected, isNew, selectionMode }: StoreItemCardProps) {
   const [loadedImageUrl, setLoadedImageUrl] = useState<string | null>(null);
   const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
 
@@ -1008,18 +1046,18 @@ const StoreItemCard: React.FC<StoreItemCardProps> = ({ item, onImageError, onIma
       tabIndex={0}
       onClick={(event) => {
         if ((event.target as HTMLElement).closest('button, a')) return;
-        onSelect(event.shiftKey);
+        actions.onSelect(item, event.shiftKey);
       }}
       onKeyDown={(event) => {
         if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
         event.preventDefault();
-        onSelect(false);
+        actions.onSelect(item, false);
       }}
       draggable={selectionMode}
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = 'copy';
         event.dataTransfer.setData('text/plain', String(item.id));
-        onDragStart();
+        actions.onDragStart(item);
       }}
       className={`group relative flex flex-col justify-between rounded-xl sm:rounded-2xl p-2.5 sm:p-3 transition-all duration-200 shadow-sm h-full cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 ${isSelected ? 'bg-white/10 border-white/45' : 'bg-black/40 hover:bg-black/60 border-white/[0.07] hover:border-white/20'}`}
     >
@@ -1034,7 +1072,7 @@ const StoreItemCard: React.FC<StoreItemCardProps> = ({ item, onImageError, onIma
           <button
             onClick={(e) => {
               e.stopPropagation();
-              onToggleWishlist();
+              actions.onToggleWishlist(item);
             }}
             aria-label={isWishlisted ? 'Remove from favorites' : 'Add to favorites'}
             className={`p-1.5 rounded-lg transition-all active:scale-80 ${
@@ -1057,8 +1095,8 @@ const StoreItemCard: React.FC<StoreItemCardProps> = ({ item, onImageError, onIma
             alt={item.name}
             loading="lazy"
             referrerPolicy="no-referrer"
-            onLoad={() => { setLoadedImageUrl(item.thumbnailUrl); onImageLoad(); }}
-            onError={() => { setFailedImageUrl(item.thumbnailUrl); onImageError(); }}
+            onLoad={() => { setLoadedImageUrl(item.thumbnailUrl); actions.onImageLoad(item.id); }}
+            onError={() => { setFailedImageUrl(item.thumbnailUrl); actions.onImageError(item.id); }}
             className={`w-full h-full object-contain filter drop-shadow-[0_4px_10px_rgba(0,0,0,0.5)] transition-all duration-300 transform group-hover:scale-105 ${
               loadedImageUrl === item.thumbnailUrl ? 'opacity-100' : 'opacity-0'
             }`}
@@ -1107,7 +1145,7 @@ const StoreItemCard: React.FC<StoreItemCardProps> = ({ item, onImageError, onIma
       />
     </div>
   );
-};
+});
 
 interface FilterMenuProps {
   label: string;

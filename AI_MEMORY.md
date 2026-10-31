@@ -5,48 +5,44 @@
 - **Стиль:** Минимализм, Richard Sancho Aesthetic, Dark Mode, High-end UI. Не добавлять неоновые градиенты/карточки-в-карточках.
 - **Главный экран (Stage1Hero):** Максимально чистый интерфейс, интерактивный фон `Balatro` (ogl WebGL, `React.memo`, `dpr≤2`).
 - **Брендинг:** Проект официально переименован в **Syntax3**. Логотип `>:#3`.
-- **Стек:** Vite 6 + React 18 + Express + Discord.js v14 (`server/discordBot.ts`) + Roblox API proxy (`server/robloxService.ts`), Vercel deploy (`api/index.ts`), LRUCache + ETag + SSE Streaming Valuation.
-- **Статус Live-теста (2026-08-24 17:24 UTC):** ✅ Подтверждено: вещь `Birds` группы `#1087404693` снята с продажи (`была 5 R$`) → бот прислал `⛔ Birds — снята с продажи` в DM `1249714387426476094`. Осталось проверить `BACK_ON_SALE` и `NEW ITEM` — код уже готов, ждет следующего дропа/ре-листа.
-- **Режим работы:** Локально `http://localhost:5173` + `http://localhost:3001` (сервер + бот), `CHECK_INTERVAL_MS=60000` для теста (прод `7*60*1000`). Бот стартует только `!process.env.VERCEL && DISCORD_BOT_TOKEN`.
+- **Стек:** Vite 6 + React 18 + Express + Roblox API proxy (`server/robloxService.ts`), Vercel deploy (`api/index.ts`), LRUCache + ETag + SSE Streaming Valuation.
+- **Без сервера-хранилища:** Discord-бот, Discord OAuth, серверный трекинг групп, Redis и cron удалены (2026-10-31). Избранное, история, сохранённые луки и папка скопированных групп живут только в `localStorage` браузера.
+- **Режим работы:** Локально `http://localhost:5173` (Vite) + `http://localhost:3001` (API).
 
 ## Инварианты для ИИ — НЕ ЛОМАТЬ (зачем так)
-1. **`trust proxy` + `getClientIp()=req.ip`** `server/index.ts:26` — защита от spoof `X-Forwarded-For` и обхода rate-limit. Не возвращать `req.headers['x-forwarded-for']`.
-2. **CORS allowlist `ALLOWED_ORIGINS` deny-by-default в проде** `server/index.ts:38` — в проде без `ALLOWED_ORIGINS` кросс-домен блокируется. Не делать `allow *`.
-3. **`AbortController` в `App.tsx` + `signal` во всех методах `robloxService.ts`** — отмена каскада Roblox запросов при быстром втором поиске / `req.close`. Не убирать `signal` из `axios`.
-4. **`p-limit(5)` для Economy API + чанки по 5** `robloxService.ts:583` и `discordBot.ts:20` — без этого мгновенный `429 Too Many Requests` и бан IP. Не делать `Promise.all(120)`.
-5. **Единый `lib/fallbacks.ts` + `ARCHIVED_PREFIX='__ARCHIVED__:'` `robloxService.ts:55`** — не использовать магию `[Archived` (имя вещи может так начинаться).
-6. **`server/data/folderSync.json` + `folderStore.ts` структура** — `links/reverseLinks/tracked/subscriptions/groupRoblox`. Не менять ключи, не писать туда вебхуки, фильтр `/^\d{17,20}$/` обязателен.
-7. **`!process.env.VERCEL` для бота** `server/index.ts:429` — в Vercel serverless бот не стартует, только API. Не запускать бота в serverless.
-8. **DOM: `button` внутри `button` запрещено** `src/components/CopiedGroupsFolder.tsx:86` — внешний контейнер теперь `div role="button"` (было `<button>` с вложенными `<button>Change</button>` → React `validateDOMNesting` ворнинг). Не возвращать `<button>` как обертку для тултипов/кнопок.
-9. **Паскаль vs camel в Economy API** `robloxService.ts:589` — `getEconomyAssetDetails` возвращает нормализованные `price/isForSale` (но raw API отдает `PriceInRobux/IsForSale`). Читать `price/isForSale` с fallback на `PriceInRobux/IsForSale`, иначе снова `price=null` и бот слепнет.
-10. **`folderStore.flush()` + `SIGINT/SIGTERM` + `setItemStates` после каждого тика** `folderStore.ts:61` `discordBot.ts:88` — без немедленного flush рестарт теряет `itemStates` и спамит повторно. Не оставлять только дебаунс `300ms`.
+1. **`trust proxy` + `getClientIp()=req.ip`** `server/index.ts` — защита от spoof `X-Forwarded-For` и обхода rate-limit. Не возвращать `req.headers['x-forwarded-for']`.
+2. **CORS allowlist `ALLOWED_ORIGINS` deny-by-default в проде** `server/index.ts` — в проде без `ALLOWED_ORIGINS` кросс-домен блокируется. Не делать `allow *`.
+3. **`AbortController` в `App.tsx` + `signal` во всех методах `robloxService.ts`** — отмена каскада Roblox запросов при быстром втором поиске. Не убирать `signal` из `axios`. Отмену запроса слушать через `res.on('close')` + `!res.writableEnded`: на Node 18+ `req 'close'` срабатывает сразу после чтения тела POST.
+4. **Общий конвейер профиля** `server/sharedTask.ts` — одинаковые параллельные запросы ждут одну задачу; она отменяется, только когда ушли все ожидающие. Не передавать в общую задачу `signal` одного клиента (иначе остальные зависают без ответа).
+5. **`p-limit` для Economy API + чанки** `robloxService.ts` — без этого мгновенный `429 Too Many Requests` и бан IP. Не делать `Promise.all(120)`. `429` ретраится максимум 1 раз (с `Retry-After`).
+6. **Единый `lib/fallbacks.ts` + `ARCHIVED_PREFIX='__ARCHIVED__:'`** `robloxService.ts` — не использовать магию `[Archived` (имя вещи может так начинаться).
+7. **DOM: `button` внутри `button` запрещено** `src/components/CopiedGroupsFolder.tsx` — внешний контейнер `div role="button"`.
+8. **Паскаль vs camel в Economy API** — `getEconomyAssetDetails` возвращает нормализованные `price/isForSale` (raw API отдает `PriceInRobux/IsForSale`).
+9. **SSE ошибки** — заголовки стрима уходят с первым событием, поэтому ранние ошибки (нет юзера, 429) приходят обычным JSON со статусом; клиент не повторяет запрос через JSON.
+10. **Секреты** — `.env*` (кроме `.env.example`) в `.gitignore`. Никогда не коммитить `.env.prod`/`.env.vercel` (вывод `vercel env pull`).
 
 ## Руководство для следующего ИИ — как думать и куда улучшать
 **Почему такие решения:**
-- Двухэтапный `getAllGroupItems`: сначала `catalog.roblox.com/v1/search/items` (каталог, дешевый), потом `economy.roblox.com/v2/assets/details` чанками по 5. Прямой опрос `search/items/details` на 2000 вещей = мгновенный бан.
-- Двойная проверка `isForSale` через свежий `bypassCache:true` перед DM — защита от ложного `OFF_SALE` при `429/timeout`. При `null`/`429` — тихо ждем следующий тик, не спамим.
-- Тихая миграция `heal silent` `discordBot.ts:62` — первый тик после фикса `price:null/isForSale:null` не шлет 120 уведомлений, а чинит базу. Без этого — спам на всю папку.
-- `isBackfill` `prevCount < length-30` — защита при расширении лимита `10→120`. Без этого старые вещи прилетают как `NEW`.
+- **VPN FAST** `robloxService.ts` — `HEDGED 400ms vs 1200ms`, `SPECULATIVE 380ms vs 900ms`, `ECONOMY_TIMEOUT 9500ms`, `ETag off`. Hedged-дубль запускается максимум один раз.
 - `div role="button"` вместо `<button>` — единственный способ иметь тултипы/кнопки внутри кликабельного хедера без нарушения HTML-спеки.
-- `7 минут` баланс: чаще = 429, реже = юзер не успеет перекупить. Для теста можно `CHECK_INTERVAL_MS=60000`, но на 4+ группах уже `429`, см. лог `12:19:28 429`.
-- **VPN FAST** `robloxService.ts:68` — `HEDGED 400ms vs 1200ms`, `SPECULATIVE 380ms vs 900ms`, `ECONOMY_TIMEOUT 9500ms`, `ETag off` — без этого на VPN `VALUING 11/21 (7 priced)` застревает, с ним `21/21` за 2-3с. Зачем: VPN добавляет 400-800ms хвост, hedged спасает.
-- **HttpOnly cookie vs URL token** `server/index.ts:341` — `signUserId` теперь `timingSafeEqual` + `HttpOnly SameSite Lax Secure` `wornby_auth`; в URL токен светился в `history/referer/log` и `localStorage` доступен XSS. Зачем: `localStorage` XSS крадет навсегда, `HttpOnly` нет.
+- Карточки магазина (`StoreItemCard`) мемоизированы со стабильными колбэками — иначе каждая страница каталога и каждая партия миниатюр перерисовывала все карточки.
 
 **Как не сломать при следующих правках:**
-- Перед коммитом: `npx tsc --noEmit` + `npm run build` должны быть 0 ошибок (проверено 834kb).
-- Меняешь `discordBot.ts` → проверь 4 перехода unit-тестом: `true→false=OFF_SALE`, `false→true=BACK_ON_SALE`, `100→150=PRICE_CHANGE`, `null→true=HEAL_SILENT` (см. `discordBot.ts` тест в истории).
-- Меняешь `CopiedGroupsFolder.tsx` → открой `http://localhost:5173`, консоль не должна иметь `validateDOMNesting`, `localStorage wornby_discord_token` должен быть пуст после миграции в куку.
-- Добавляешь новую группу → проверь `POST /api/folder/sync` с `credentials:include` (кука) + `folderStore.track` прогревает 120 вещей в фоне, а не только `lastItemId`.
-- Меняешь `CORS` → `credentials:true` обязателен для куки; `origin` должен быть точный, не `*`.
+- Перед коммитом: `npx tsc --noEmit`, `npx tsx --test tests/*.test.ts` и `npm run build` — 0 ошибок.
+- Меняешь `CopiedGroupsFolder.tsx` → консоль не должна иметь `validateDOMNesting`.
 
 **Куда улучшать дальше:**
-- Экспоненциальный backoff при `429` вместо фиксированных `1200ms` между батчами.
-- `GET /api/debug/check?groupId=...` для ручного форса тика без ожидания интервала.
-- Кэшировать `groupInfo` на 60с чтобы не дергать `groups.roblox.com` каждый тик.
-- Сжать `vite` чанк `834kb` via `manualChunks` (сейчас ворнинг `>500kb`).
-- Ротация утекших секретов: `DISCORD_BOT_TOKEN/CLIENT_SECRET` были в `.env.example` — уже заменены на `PUT_YOUR_*`, но реальный токен `MTU0MTM0...WeupnQ` надо пересоздать в Discord Developer Portal и `SESSION_SECRET` сменить на `crypto.randomBytes(32).toString('hex')`.
+- Сжать `vite` чанк (~520kb) via `manualChunks` / ленивую загрузку `GroupStoreModal`.
 
 ## История изменений
+
+### [2026-10-31 — Удаление Discord-бота и серверного трекинга, надёжность и производительность]
+- Удалены `server/discordBot.ts`, `server/folderStore.ts`, `server/data/folderSync.json`, маршруты `/api/folder/*`, `/api/auth/discord/*`, `/api/discord/status`, `/api/debug/folder`, `/api/cron/check`, `/api/batch-assets`, cron в `vercel.json`, зависимости `discord.js` и `redis`.
+- Удалены из репозитория `.env.prod` и `.env.vercel`; `.gitignore` игнорирует все `.env*`, кроме `.env.example`.
+- Профиль: SSE-путь использует `profileCache`; общий конвейер не зависает после отмены первого клиента; реальные HTTP-статусы для ошибок стрима.
+- Ретраи: `429` — не больше одного повтора, без дублирования hedged-запроса; поиск игроков кэшируется на 60с и не ретраится.
+- Фронтенд: исправлен путь проверки новинок в папке групп (`/api/group/...`), мемоизация карточек магазина, запись «seen»-списков только при росте и очистка при переполнении `localStorage`, фон `Balatro` больше не плодит циклы `requestAnimationFrame`.
+
 
 ### [2026-08-25 — Замена эмодзи на SVG Lucide и фильтрация 1 Robux артефактов как OFF-SALE]
 - **Замена эмодзи на Lucide-иконки:**
@@ -109,7 +105,7 @@
   - `src/components/CopiedGroupsFolder.tsx:32-72` теперь `useEffect fetch /api/auth/discord/me {credentials:include}` вместо `URLSearchParams discord_token`, чистит `?discord_token`/`?linked` из history, стирает `localStorage wornby_discord_token` после успешной куки (миграция), тултип больше не показывает `slice(0,6)` токена.
   - `src/hooks/useCopiedGroupsFolder.ts:54-127` все `fetch /folder/*` теперь `credentials:include` и не кладут `discordToken` в body (утечка в логах), legacy токен шлется только fallback.
   - **Верификация:** `curl -i /api/auth/discord/me` → `200` с `Access-Control-Allow-Credentials:true`, `curl health` OK, `tsc 0`, `vite build 834kb`, `Set-Cookie HttpOnly` виден в `cmd` логе, `localStorage` пуст, URL после OAuth `?linked=1`.
-- **Утечка секретов в репо (критично):** `.env.example:6-8` содержал реальные `DISCORD_BOT_TOKEN=MTU0MTM0...`, `CLIENT_ID`, `CLIENT_SECRET` — `git history` уже утек. **Фикс:** заменены на `PUT_YOUR_*` + коммент `СРОЧНО пересоздай в Discord Developer Portal` + `SESSION_SECRET=change_me__generate_random_64_hex`. **Действие юзеру:** пересоздать Bot Token и Client Secret, сгенерить `SESSION_SECRET` (`node -e "console.log(crypto.randomBytes(32).toString('hex'))"`), старые токены отозвать.
+- **Утечка секретов в репо (критично):** `.env.example:6-8` содержал реальные `DISCORD_BOT_TOKEN=[удалено]`, `CLIENT_ID`, `CLIENT_SECRET` — `git history` уже утек. **Фикс:** заменены на `PUT_YOUR_*` + коммент `СРОЧНО пересоздай в Discord Developer Portal` + `SESSION_SECRET=change_me__generate_random_64_hex`. **Действие юзеру:** пересоздать Bot Token и Client Secret, сгенерить `SESSION_SECRET` (`node -e "console.log(crypto.randomBytes(32).toString('hex'))"`), старые токены отозвать.
 - **Остальные лазейки (средне):**
   - `folderStore.ts:61` теперь `chmod 0o600` после `writeFileSync` — раньше `644 world-readable`, Discord ID + группы читал любой юзер на хостинге.
   - `discordBot.ts:99-136` санитайз `groupInfo.name/description` — `replace(/[@`]/g,'·')` — без этого `@everyone/@here` в описании группы пингует весь сервер через Embed.

@@ -1,9 +1,10 @@
 .vercel
 node_modules
 dist
+# Environment files hold credentials; only the example is tracked.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 .DS_Store
 *.log
 .tools/

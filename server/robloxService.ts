@@ -2,6 +2,7 @@ import axios, { AxiosError, AxiosInstance } from 'axios';
 import { LRUCache } from 'lru-cache';
 import http from 'node:http';
 import https from 'node:https';
+import { joinSharedTask, SharedTask } from './sharedTask.js';
 import { normalizeSavedOutfits, normalizeSavedOutfitAssets, SavedOutfit, SavedOutfitAsset } from './savedOutfits.js';
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -38,7 +39,10 @@ const catalogCache = new LRUCache<number, Partial<RobloxAssetItem>>({ max: 3000,
 const thumbCache = new LRUCache<number, string>({ max: 3000, ttl: 1000 * 60 * 10 });
 const groupIconCache = new LRUCache<number, string>({ max: 2000, ttl: 1000 * 60 * 10 });
 const negativeCache = new LRUCache<string, number>({ max: 500, ttl: 1000 * 15 });
-const pendingProfiles = new Map<string, Promise<RobloxUserProfileFull>>();
+const pendingProfiles = new Map<string, SharedTask<RobloxUserProfileFull>>();
+const userSearchCache = new LRUCache<string, RobloxUserSearchResult[]>({ max: 500, ttl: 1000 * 60 });
+type GroupInfo = { id:number; name:string; memberCount:number; description?:string; owner?: unknown; created?:string; updated?:string };
+const groupInfoCache = new LRUCache<number, GroupInfo>({ max: 2000, ttl: 1000 * 60 * 30 }); // 30 min cache
 
 // ── 2️⃣ Fingerprint Skip: murmur/FNV hash of sorted assetIds ────────
 const outfitFingerprintCache = new LRUCache<string, string>({ max: 2000, ttl: 1000 * 60 * 10 }); // userId -> fp
@@ -141,9 +145,13 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
       const msg = (e.message || '').toLowerCase();
       const isTimeout = msg.includes('timeout') || msg.includes('timed out') || msg.includes('abort');
       const isRetryable = status === 429 || status === 408 || (status != null && status >= 500 && status < 600) || e.code === 'ECONNRESET' || e.code === 'ETIMEDOUT' || e.code === 'ECONNABORTED' || isTimeout;
-      if (!isRetryable || attempt >= retries) throw err;
+      // 429 retries only multiply load on an already throttled API (hedges and mirrors add more) — retry it once at most
+      if (!isRetryable || attempt >= (status === 429 ? Math.min(retries, 1) : retries)) throw err;
+      const retryAfterMs = status === 429 ? Number(e.response?.headers?.['retry-after']) * 1000 : NaN;
       const baseDelay = status === 429 ? 1200 : 300;
-      const backoff = baseDelay * Math.pow(2, attempt) + Math.random() * 300;
+      const backoff = Number.isFinite(retryAfterMs) && retryAfterMs > 0
+        ? Math.min(retryAfterMs, 5000)
+        : baseDelay * Math.pow(2, attempt) + Math.random() * 300;
       await new Promise(r=>setTimeout(r, backoff));
       attempt++;
     }
@@ -152,20 +160,26 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
 // Hedged: если первый запрос не ответил за hedgedDelay, шлём дубликат через другой egress и берём первый успешный — спасает при VPN хвостах
 async function hedged<T>(primary: () => Promise<T>, fallback: () => Promise<T>, hedgedDelayMs = 1200, signal?: AbortSignal): Promise<T> {
   let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  let fallbackRun: Promise<T> | null = null;
+  const startFallback = () => (fallbackRun ??= fallback());
   const fallbackPromise = new Promise<T>((resolve, reject) => {
     fallbackTimer = setTimeout(() => {
       if (signal?.aborted) return reject(new DOMException('Aborted','AbortError'));
-      fallback().then(resolve).catch(reject);
+      startFallback().then(resolve).catch(reject);
     }, hedgedDelayMs);
   });
+  fallbackPromise.catch(() => {});
+  const primaryRun = primary();
+  primaryRun.catch(() => {});
   try {
-    const result = await Promise.race([primary(), fallbackPromise]);
+    const result = await Promise.race([primaryRun, fallbackPromise]);
     if (fallbackTimer) clearTimeout(fallbackTimer);
     return result;
   } catch (e) {
     if (fallbackTimer) clearTimeout(fallbackTimer);
-    // если primary упал, ждём fallback
-    return fallback();
+    if (signal?.aborted) throw e;
+    // первый провал: ждём того, кто ещё жив (fallback запускается не более одного раза)
+    try { return await Promise.any([primaryRun, startFallback()]); } catch { throw e; }
   }
 }
 
@@ -240,12 +254,16 @@ export class RobloxService {
   }
 
   public static async searchUsers(keyword: string, signal?: AbortSignal): Promise<RobloxUserSearchResult[]> {
+    const cacheKey = keyword.trim().toLowerCase();
+    const cached = userSearchCache.get(cacheKey);
+    if (cached) return cached;
+    // No retries: suggestions are typed live and debounced, a stale retry only competes with the next keystroke.
     const res = await withRetry(() => robloxAxios.get('https://users.roblox.com/v1/users/search', {
       // Roblox only accepts 10, 25, 50, or 100 for this endpoint.
       params: { keyword: keyword.trim(), limit: 10, sortOrder: 'Asc' },
       timeout: 6000,
       signal,
-    }));
+    }), 0);
     const users = Array.isArray(res.data?.data) ? res.data.data.slice(0, 8) : [];
     const userIds = users.map((user: { id: number }) => Number(user.id)).filter((id: number) => Number.isSafeInteger(id) && id > 0);
     const headshotMap = new Map<number, string | null>();
@@ -264,13 +282,15 @@ export class RobloxService {
         // Suggestions are still useful when Roblox's thumbnail service is unavailable.
       }
     }
-    return users.map((user: { id: number; name: string; displayName?: string; hasVerifiedBadge?: boolean }) => ({
+    const results: RobloxUserSearchResult[] = users.map((user: { id: number; name: string; displayName?: string; hasVerifiedBadge?: boolean }) => ({
       id: Number(user.id),
       name: user.name,
       displayName: user.displayName || user.name,
       hasVerifiedBadge: !!user.hasVerifiedBadge,
       headshotUrl: headshotMap.get(Number(user.id)) || null,
     }));
+    userSearchCache.set(cacheKey, results);
+    return results;
   }
 
   public static async resolveUser(query: string, signal?: AbortSignal): Promise<RobloxUserResolve> {
@@ -718,11 +738,9 @@ export class RobloxService {
     return detailsMap;
   }
 
-  private static groupInfoCache = new Map<number, { data: { id:number; name:string; memberCount:number; description?:string; owner?: unknown; created?:string; updated?:string }; expiresAt: number }>();
-
-  public static async getGroupInfo(groupId:number, signal?:AbortSignal): Promise<{ id:number; name:string; memberCount:number; description?:string; owner?: unknown; created?:string; updated?:string } | null> {
-    const cached = this.groupInfoCache.get(groupId);
-    if (cached && Date.now() < cached.expiresAt) return cached.data;
+  public static async getGroupInfo(groupId:number, signal?:AbortSignal): Promise<GroupInfo | null> {
+    const cached = groupInfoCache.get(groupId);
+    if (cached) return cached;
     try {
       let res;
       try {
@@ -732,7 +750,7 @@ export class RobloxService {
       }
       if (!res.data?.id) return null;
       const data = { id: res.data.id, name: res.data.name, memberCount: res.data.memberCount ?? 0, description: res.data.description, owner: res.data.owner, created: res.data.created, updated: res.data.updated };
-      this.groupInfoCache.set(groupId, { data, expiresAt: Date.now() + 30 * 60 * 1000 }); // 30 min cache
+      groupInfoCache.set(groupId, data);
       return data;
     } catch { return null; }
   }
@@ -1103,91 +1121,113 @@ export class RobloxService {
   // ── Core orchestrator (non-stream) ────────────────────────────────
   public static async getFullProfile(query:string, bypassCache=false, signal?:AbortSignal): Promise<RobloxUserProfileFull> {
     const startTime=Date.now();
-    const trimmedLower=query.trim().toLowerCase();
-    const coalesceKey=`${trimmedLower}:${bypassCache?'fresh':'cache'}`;
-    if(!bypassCache){
-      const hit=profileCache.get(trimmedLower);
-      if(hit) {
-        // если в кэше есть DELETED (старый VPN-таймаут) — инвалидируем, форсим свежий фетч для этих 3 вещей и им подобных
-        const hasStaleDeleted = hit.outfit.items.some(i=>i.isDeletedOrModerated);
-        if (hasStaleDeleted) {
-          profileCache.delete(trimmedLower);
-        } else {
-          return {...hit, telemetry:{...hit.telemetry, cached:true, responseTimeMs: Date.now()-startTime}};
-        }
-      }
-      const pending=pendingProfiles.get(coalesceKey);
-      if(pending) return pending;
+    const key=query.trim().toLowerCase();
+    if(bypassCache) return this.loadFullProfile(query, true, startTime, signal);
+    const hit=this.getCachedProfile(key, startTime);
+    if(hit) return hit;
+    // Одинаковые параллельные запросы делят один конвейер Roblox; он отменяется, только когда ушли все ожидающие
+    let shared=pendingProfiles.get(key);
+    if(!shared || shared.controller.signal.aborted){
+      const controller=new AbortController();
+      const entry: SharedTask<RobloxUserProfileFull>={ controller, waiters:0, promise:this.loadFullProfile(query, false, startTime, controller.signal) };
+      pendingProfiles.set(key, entry);
+      entry.promise.catch(()=>{}).finally(()=>{ if(pendingProfiles.get(key)===entry) pendingProfiles.delete(key); });
+      shared=entry;
     }
-    const task=(async(): Promise<RobloxUserProfileFull>=>{
-      const user=await this.resolveUser(query, signal);
-      if(signal?.aborted) throw new DOMException('Aborted','AbortError');
-      const [equippedAssets, thumbnails, groups]=await Promise.all([ this.getEquippedAssets(user.id, signal), this.getAvatarThumbnails(user.id, signal), this.getUserGroups(user.id, signal) ]);
-      if(signal?.aborted) throw new DOMException('Aborted','AbortError');
-      const assetIds=equippedAssets.map(a=>a.id);
-      const fp=computeFingerprint(assetIds);
-      // 2️⃣ Fingerprint Skip: if fp unchanged vs last fetch for this user, reuse snapshot and skip catalog network
-      let catalogDetailsMap: Map<number,Partial<RobloxAssetItem>>;
-      let assetThumbnailMap: Record<number,string>;
-      const cachedFp=outfitFingerprintCache.get(String(user.id));
-      const snap=outfitSnapshotCache.get(fp);
-      const canSkip = !bypassCache && cachedFp===fp && snap && assetIds.every(id=> snap.has(id) || catalogCache.has(id) || (priceVectorCache.has(id) && metaCache.has(id)));
-      if (canSkip) {
-        // reconstruct map from snapshot + caches
-        catalogDetailsMap=new Map<number,Partial<RobloxAssetItem>>();
-        for(const id of assetIds){
-          const v=snap?.get(id) || catalogCache.get(id);
-          if(v) catalogDetailsMap.set(id,v);
-          else {
-            const pv=priceVectorCache.get(id), mv=metaCache.get(id);
-            if(pv && mv) catalogDetailsMap.set(id, {id, ...pv, ...mv} as Partial<RobloxAssetItem>);
-          }
+    return joinSharedTask(shared, signal);
+  }
+
+  private static getCachedProfile(key:string, startTime:number): RobloxUserProfileFull | null {
+    const hit=profileCache.get(key);
+    if(!hit) return null;
+    // если в кэше есть DELETED (старый VPN-таймаут) — инвалидируем, форсим свежий фетч
+    if(hit.outfit.items.some(i=>i.isDeletedOrModerated)){ profileCache.delete(key); return null; }
+    return {...hit, telemetry:{...hit.telemetry, cached:true, responseTimeMs: Date.now()-startTime}};
+  }
+
+  private static cacheProfile(key:string, profile:RobloxUserProfileFull): void {
+    profileCache.set(key, profile);
+    const canonicalLower=profile.user.name.toLowerCase(); if(canonicalLower!==key) profileCache.set(canonicalLower, profile);
+    const idKey=String(profile.user.id); if(idKey!==key && idKey!==canonicalLower) profileCache.set(idKey, profile);
+  }
+
+  private static async loadFullProfile(query:string, bypassCache:boolean, startTime:number, signal?:AbortSignal): Promise<RobloxUserProfileFull> {
+    const user=await this.resolveUser(query, signal);
+    if(signal?.aborted) throw new DOMException('Aborted','AbortError');
+    const [equippedAssets, thumbnails, groups]=await Promise.all([ this.getEquippedAssets(user.id, signal), this.getAvatarThumbnails(user.id, signal), this.getUserGroups(user.id, signal) ]);
+    if(signal?.aborted) throw new DOMException('Aborted','AbortError');
+    const assetIds=equippedAssets.map(a=>a.id);
+    const fp=computeFingerprint(assetIds);
+    // 2️⃣ Fingerprint Skip: if fp unchanged vs last fetch for this user, reuse snapshot and skip catalog network
+    let catalogDetailsMap: Map<number,Partial<RobloxAssetItem>>;
+    let assetThumbnailMap: Record<number,string>;
+    const cachedFp=outfitFingerprintCache.get(String(user.id));
+    const snap=outfitSnapshotCache.get(fp);
+    const canSkip = !bypassCache && cachedFp===fp && snap && assetIds.every(id=> snap.has(id) || catalogCache.has(id) || (priceVectorCache.has(id) && metaCache.has(id)));
+    if (canSkip) {
+      // reconstruct map from snapshot + caches
+      catalogDetailsMap=new Map<number,Partial<RobloxAssetItem>>();
+      for(const id of assetIds){
+        const v=snap?.get(id) || catalogCache.get(id);
+        if(v) catalogDetailsMap.set(id,v);
+        else {
+          const pv=priceVectorCache.get(id), mv=metaCache.get(id);
+          if(pv && mv) catalogDetailsMap.set(id, {id, ...pv, ...mv} as Partial<RobloxAssetItem>);
         }
-        assetThumbnailMap=await this.getAssetThumbnails(assetIds, signal);
-      } else {
-        [catalogDetailsMap, assetThumbnailMap]=await Promise.all([ this.getCatalogDetails(assetIds, signal), this.getAssetThumbnails(assetIds, signal) ]);
-        outfitFingerprintCache.set(String(user.id), fp);
       }
-      if(signal?.aborted) throw new DOMException('Aborted','AbortError');
-      let totalValueRobux=0, offSaleCount=0, freeCount=0, pricedCount=0;
-      const items: RobloxAssetItem[] = equippedAssets.map((baseAsset)=>{
-        const assetId=baseAsset.id; const catalogData=catalogDetailsMap.get(assetId); const thumbUrl=assetThumbnailMap[assetId]||null;
-        const rawResolvedName=catalogData?.name||baseAsset.name; const isArchivedMarker=typeof rawResolvedName==='string' && rawResolvedName.startsWith(ARCHIVED_PREFIX);
-        const displayName=isArchivedMarker?`Asset #${assetId}`:rawResolvedName; // hasValidName только для имени, не для DELETED флага
-        // УНИКАЛЬНОЕ ИСПРАВЛЕНИЕ VPN: DELETED только при явном 404-маркере, а не при таймауте. Иначе VPN с медленным инетом помечал все как удалённые
-        const isDeletedOrModerated=catalogData?.isDeletedOrModerated===true;
-        // resilient price resolve: исправляет старый кэш где 76692407 был FREE 0 вместо ресейла 482
-        let price: number|null = (catalogData?.price as number|null) ?? null;
-        const lowest = (catalogData?.lowestPrice as number|null) ?? null;
-        const hasResale = lowest!=null && lowest>0;
-        let catalogIsFree = catalogData?.isFree===true;
-        // СТАРЫЙ КЭШ: FREE 0 + resale 482 — считаем это не FREE, а ресейл (перекрываем даже если isFree=true)
-        if (price===0 && hasResale) { price = lowest; catalogIsFree = false; }
-        else if ((price==null) && hasResale) { price = lowest; catalogIsFree = false; }
-        const isFree = catalogIsFree || price===0;
-        // если есть ресейл-цена, считаем forSale даже при OffSale
-        const isForSale=!isDeletedOrModerated && (isFree || (price!==null && price>0) || (hasResale && (catalogData?.isForSale===true || catalogData?.priceStatus==='Resale')) || catalogData?.isForSale===true);
-        const isOffSale=!isForSale && !isFree;
-        if(price!=null && price>0){ totalValueRobux+=price; pricedCount++; } else if(isFree) freeCount++; else offSaleCount++;
-        const finalName=displayName||`Asset #${assetId}`; const resolvedTypeName=catalogData?.assetTypeName||baseAsset.assetTypeName||(baseAsset.assetType?ASSET_TYPE_MAP[baseAsset.assetType]:'Wearable Asset');
-        let effectivePriceStatus = catalogData?.priceStatus;
-        if (!effectivePriceStatus) effectivePriceStatus = isFree ? 'Free' : isOffSale ? 'OffSale' : 'Resale';
-        else if (hasResale && effectivePriceStatus==='OffSale') effectivePriceStatus='Resale';
-        return { id:assetId, name:finalName, description:catalogData?.description||'Equipped on avatar.', assetType:catalogData?.assetType||baseAsset.assetType, assetTypeName:resolvedTypeName, creatorName:catalogData?.creatorName||'Roblox UGC Creator', creatorId:catalogData?.creatorId, creatorType:catalogData?.creatorType, price, priceStatus:effectivePriceStatus, lowestPrice:lowest ?? null, isForSale, isOffSale, isDeletedOrModerated, isFree, itemRestrictions:catalogData?.itemRestrictions||[], thumbnailUrl:thumbUrl, studioLuaCommand:`game:GetService("InsertService"):LoadAsset(${assetId}).Parent = workspace`, catalogUrl:`https://www.roblox.com/catalog/${assetId}` };
-      });
-      const fullProfile: RobloxUserProfileFull = { user, thumbnails, outfit:{ totalValueRobux, hasOffSaleItems: offSaleCount>0, offSaleCount, freeCount, pricedCount, itemCount: items.length, items }, groups, telemetry:{ cached:false, timestamp: Date.now(), responseTimeMs: Date.now()-startTime, wearingAssetCount: items.length, fingerprint: fp, egressShards: EGRESS_COUNT } };
-      profileCache.set(trimmedLower, fullProfile);
-      const canonicalLower=user.name.toLowerCase(); if(canonicalLower!==trimmedLower) profileCache.set(canonicalLower, fullProfile);
-      const idKey=String(user.id); if(idKey!==trimmedLower && idKey!==canonicalLower) profileCache.set(idKey, fullProfile);
-      return fullProfile;
-    })();
-    if(!bypassCache){ pendingProfiles.set(coalesceKey, task); try{ const res=await task; return res;} finally{ pendingProfiles.delete(coalesceKey);} } else return task;
+      assetThumbnailMap=await this.getAssetThumbnails(assetIds, signal);
+    } else {
+      [catalogDetailsMap, assetThumbnailMap]=await Promise.all([ this.getCatalogDetails(assetIds, signal), this.getAssetThumbnails(assetIds, signal) ]);
+      outfitFingerprintCache.set(String(user.id), fp);
+    }
+    if(signal?.aborted) throw new DOMException('Aborted','AbortError');
+    const fullProfile=this.assembleProfile(user, thumbnails, groups, equippedAssets, catalogDetailsMap, assetThumbnailMap, fp, startTime);
+    this.cacheProfile(query.trim().toLowerCase(), fullProfile);
+    return fullProfile;
+  }
+
+  // Shared by the JSON and SSE paths — resilient resale fix
+  private static assembleProfile(
+    user:RobloxUserResolve, thumbnails:RobloxAvatarThumbnails, groups:RobloxGroupMembership[],
+    equippedAssets:{id:number;name?:string;assetType?:number;assetTypeName?:string}[],
+    catalogDetailsMap:Map<number,Partial<RobloxAssetItem>>, assetThumbnailMap:Record<number,string>, fp:string, startTime:number,
+  ): RobloxUserProfileFull {
+    let totalValueRobux=0, offSaleCount=0, freeCount=0, pricedCount=0;
+    const items: RobloxAssetItem[] = equippedAssets.map((baseAsset)=>{
+      const assetId=baseAsset.id; const catalogData=catalogDetailsMap.get(assetId); const thumbUrl=assetThumbnailMap[assetId]||null;
+      const rawResolvedName=catalogData?.name||baseAsset.name; const isArchivedMarker=typeof rawResolvedName==='string' && rawResolvedName.startsWith(ARCHIVED_PREFIX);
+      const displayName=isArchivedMarker?`Asset #${assetId}`:rawResolvedName; // hasValidName только для имени, не для DELETED флага
+      // УНИКАЛЬНОЕ ИСПРАВЛЕНИЕ VPN: DELETED только при явном 404-маркере, а не при таймауте. Иначе VPN с медленным инетом помечал все как удалённые
+      const isDeletedOrModerated=catalogData?.isDeletedOrModerated===true;
+      // resilient price resolve: исправляет старый кэш где 76692407 был FREE 0 вместо ресейла 482
+      let price: number|null = (catalogData?.price as number|null) ?? null;
+      const lowest = (catalogData?.lowestPrice as number|null) ?? null;
+      const hasResale = lowest!=null && lowest>0;
+      let catalogIsFree = catalogData?.isFree===true;
+      // СТАРЫЙ КЭШ: FREE 0 + resale 482 — считаем это не FREE, а ресейл (перекрываем даже если isFree=true)
+      if (price===0 && hasResale) { price = lowest; catalogIsFree = false; }
+      else if ((price==null) && hasResale) { price = lowest; catalogIsFree = false; }
+      const isFree = catalogIsFree || price===0;
+      // если есть ресейл-цена, считаем forSale даже при OffSale
+      const isForSale=!isDeletedOrModerated && (isFree || (price!==null && price>0) || (hasResale && (catalogData?.isForSale===true || catalogData?.priceStatus==='Resale')) || catalogData?.isForSale===true);
+      const isOffSale=!isForSale && !isFree;
+      if(price!=null && price>0){ totalValueRobux+=price; pricedCount++; } else if(isFree) freeCount++; else offSaleCount++;
+      const finalName=displayName||`Asset #${assetId}`; const resolvedTypeName=catalogData?.assetTypeName||baseAsset.assetTypeName||(baseAsset.assetType?ASSET_TYPE_MAP[baseAsset.assetType]:'Wearable Asset');
+      let effectivePriceStatus = catalogData?.priceStatus;
+      if (!effectivePriceStatus) effectivePriceStatus = isFree ? 'Free' : isOffSale ? 'OffSale' : 'Resale';
+      else if (hasResale && effectivePriceStatus==='OffSale') effectivePriceStatus='Resale';
+      return { id:assetId, name:finalName, description:catalogData?.description||'Equipped on avatar.', assetType:catalogData?.assetType||baseAsset.assetType, assetTypeName:resolvedTypeName, creatorName:catalogData?.creatorName||'Roblox UGC Creator', creatorId:catalogData?.creatorId, creatorType:catalogData?.creatorType, price, priceStatus:effectivePriceStatus, lowestPrice:lowest ?? null, isForSale, isOffSale, isDeletedOrModerated, isFree, itemRestrictions:catalogData?.itemRestrictions||[], thumbnailUrl:thumbUrl, studioLuaCommand:`game:GetService("InsertService"):LoadAsset(${assetId}).Parent = workspace`, catalogUrl:`https://www.roblox.com/catalog/${assetId}` };
+    });
+    return { user, thumbnails, outfit:{ totalValueRobux, hasOffSaleItems: offSaleCount>0, offSaleCount, freeCount, pricedCount, itemCount: items.length, items }, groups, telemetry:{ cached:false, timestamp: Date.now(), responseTimeMs: Date.now()-startTime, wearingAssetCount: items.length, fingerprint: fp, egressShards: EGRESS_COUNT } };
   }
 
   // ── 3️⃣ SSE Streaming: incremental valuation ────────────────────────
-  public static async streamFullProfile(query:string, signal: AbortSignal, onEvent:(event:string, data:unknown)=>void): Promise<void> {
+  public static async streamFullProfile(query:string, signal: AbortSignal, onEvent:(event:string, data:unknown)=>void, bypassCache=false): Promise<void> {
     const startTime=Date.now();
     const send=(ev:string, data:unknown)=>{ try{ onEvent(ev,data);}catch{} };
+    const key=query.trim().toLowerCase();
+    const hit=bypassCache ? null : this.getCachedProfile(key, startTime);
+    if(hit){ send('user', { user: hit.user, fingerprint: undefined }); send('done', hit); return; }
     const user=await this.resolveUser(query, signal);
     send('user', { user, fingerprint: undefined });
     if(signal.aborted) throw new DOMException('Aborted','AbortError');
@@ -1207,11 +1247,9 @@ export class RobloxService {
     // incremental catalog
     let runningValue=0; let runningPriced=0; let runningFree=0; let runningOff=0;
     const seen=new Set<number>();
-    const catalogMap=new Map<number,Partial<RobloxAssetItem>>();
     const onChunk=(partial: Map<number,Partial<RobloxAssetItem>>)=>{
       for(const [id, data] of partial){
         if(seen.has(id)) continue; seen.add(id);
-        catalogMap.set(id,data);
         let p = (data.price as number|null) ?? null;
         const low = (data.lowestPrice as number|null) ?? null;
         const hasResale = low!=null && low>0;
@@ -1230,30 +1268,10 @@ export class RobloxService {
     };
     const catalogPromise=this.getCatalogDetails(assetIds, signal, onChunk);
     const [assetThumbnailMap, catalogDetailsMap]=await Promise.all([thumbPromise2, catalogPromise]);
-    // final assembly (same as getFullProfile) — resilient resale fix
-    let totalValueRobux=0, offSaleCount=0, freeCount=0, pricedCount=0;
-    const items: RobloxAssetItem[] = equippedAssets.map((baseAsset)=>{
-      const assetId=baseAsset.id; const catalogData=catalogDetailsMap.get(assetId); const thumbUrl=assetThumbnailMap[assetId]||null;
-      const rawResolvedName=catalogData?.name||baseAsset.name; const isArchivedMarker=typeof rawResolvedName==='string' && rawResolvedName.startsWith(ARCHIVED_PREFIX);
-      const displayName=isArchivedMarker?`Asset #${assetId}`:rawResolvedName;
-      const isDeletedOrModerated=catalogData?.isDeletedOrModerated===true;
-      let price: number|null = (catalogData?.price as number|null) ?? null;
-      const lowest = (catalogData?.lowestPrice as number|null) ?? null;
-      const hasResale = lowest!=null && lowest>0;
-      let catalogIsFree = catalogData?.isFree===true;
-      if (price===0 && hasResale) { price = lowest; catalogIsFree = false; }
-      else if (price==null && hasResale) { price = lowest; catalogIsFree = false; }
-      const isFree = catalogIsFree || price===0;
-      const isForSale=!isDeletedOrModerated && (isFree || (price!==null && price>0) || (hasResale && (catalogData?.isForSale===true || catalogData?.priceStatus==='Resale')) || catalogData?.isForSale===true);
-      const isOffSale=!isForSale && !isFree;
-      if(price!=null && price>0){ totalValueRobux+=price; pricedCount++; } else if(isFree) freeCount++; else offSaleCount++;
-      const finalName=displayName||`Asset #${assetId}`; const resolvedTypeName=catalogData?.assetTypeName||baseAsset.assetTypeName||(baseAsset.assetType?ASSET_TYPE_MAP[baseAsset.assetType]:'Wearable Asset');
-      let effectivePriceStatus = catalogData?.priceStatus;
-      if (!effectivePriceStatus) effectivePriceStatus = isFree ? 'Free' : isOffSale ? 'OffSale' : 'Resale';
-      else if (hasResale && effectivePriceStatus==='OffSale') effectivePriceStatus='Resale';
-      return { id:assetId, name:finalName, description:catalogData?.description||'Equipped on avatar.', assetType:catalogData?.assetType||baseAsset.assetType, assetTypeName:resolvedTypeName, creatorName:catalogData?.creatorName||'Roblox UGC Creator', creatorId:catalogData?.creatorId, creatorType:catalogData?.creatorType, price, priceStatus:effectivePriceStatus, lowestPrice:lowest ?? null, isForSale, isOffSale, isDeletedOrModerated, isFree, itemRestrictions:catalogData?.itemRestrictions||[], thumbnailUrl:thumbUrl, studioLuaCommand:`game:GetService("InsertService"):LoadAsset(${assetId}).Parent = workspace`, catalogUrl:`https://www.roblox.com/catalog/${assetId}` };
-    });
-    const fullProfile: RobloxUserProfileFull = { user, thumbnails, outfit:{ totalValueRobux, hasOffSaleItems: offSaleCount>0, offSaleCount, freeCount, pricedCount, itemCount: items.length, items }, groups, telemetry:{ cached:false, timestamp: Date.now(), responseTimeMs: Date.now()-startTime, wearingAssetCount: items.length, fingerprint: fp, egressShards: EGRESS_COUNT } };
+    if(signal.aborted) throw new DOMException('Aborted','AbortError');
+    const fullProfile=this.assembleProfile(user, thumbnails, groups, equippedAssets, catalogDetailsMap, assetThumbnailMap, fp, startTime);
+    this.cacheProfile(key, fullProfile);
+    outfitFingerprintCache.set(String(user.id), fp);
     send('done', fullProfile);
   }
 }
