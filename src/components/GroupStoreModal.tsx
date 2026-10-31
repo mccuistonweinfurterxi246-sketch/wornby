@@ -78,6 +78,16 @@ function loadStoreView(): { filters: Record<string, { searchQuery: string; filte
 
 const SEEN_KEY_PREFIX = 'wornby_store_seen_';
 
+// Off-screen cards skip paint and layerization. Each card's price badge has a backdrop blur (its own
+// compositor layer), and the animated background re-runs layerization every frame, so a 1200-item store
+// spent most of each frame rebuilding layers for cards nobody could see. The clip margin keeps the
+// focus ring and shadow, which paint outside the box, from being cut off.
+const STORE_CARD_STYLE: React.CSSProperties = {
+  contentVisibility: 'auto',
+  containIntrinsicSize: 'auto 270px',
+  overflowClipMargin: '8px',
+};
+
 // "Seen item" lists are the only per-group keys that grow without bound. When storage is full,
 // drop the other groups' lists (they only drive "New" badges) so favorites and history keep saving.
 function writeSeenIds(seenKey: string, ids: number[]) {
@@ -1060,6 +1070,7 @@ const StoreItemCard = React.memo(function StoreItemCard({ item, actions, isWishl
         actions.onDragStart(item);
       }}
       className={`group relative flex flex-col justify-between rounded-xl sm:rounded-2xl p-2.5 sm:p-3 transition-all duration-200 shadow-sm h-full cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 ${isSelected ? 'bg-white/10 border-white/45' : 'bg-black/40 hover:bg-black/60 border-white/[0.07] hover:border-white/20'}`}
+      style={STORE_CARD_STYLE}
     >
       {/* Top Bar: Type Badge & Favorite Heart Button */}
       <div className="flex items-center justify-between gap-1 mb-1.5">

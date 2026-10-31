@@ -36,6 +36,10 @@
 
 ## История изменений
 
+### [2026-10-31 — Плавность прокрутки и фона (измерено в Chrome на 180 Гц)]
+- Фон `Balatro` рендерится в Web Worker на `OffscreenCanvas` (`ui/balatro.worker.ts`, общий код в `ui/balatroScene.ts`); без поддержки — тот же цикл в главном потоке. Раньше каждый кадр фона ждал рендеринг страницы: в магазине на 1200 вещей фон падал до 19–40 fps (до 97% кадров >25 мс), теперь 60 fps, p95 ≈17 мс.
+- Карточки магазина: `content-visibility: auto` — невидимые карточки (у каждой бейдж цены с `backdrop-blur` = отдельный слой) не рисуются и не участвуют в `Layerize`. Прокрутка магазина 20–42 → 66–72 fps (главный поток). `overflow-clip-margin` сохраняет кольцо фокуса и тень.
+
 ### [2026-10-31 — Удаление Discord-бота и серверного трекинга, надёжность и производительность]
 - Удалены `server/discordBot.ts`, `server/folderStore.ts`, `server/data/folderSync.json`, маршруты `/api/folder/*`, `/api/auth/discord/*`, `/api/discord/status`, `/api/debug/folder`, `/api/cron/check`, `/api/batch-assets`, cron в `vercel.json`, зависимости `discord.js` и `redis`.
 - Удалены из репозитория `.env.prod` и `.env.vercel`; `.gitignore` игнорирует все `.env*`, кроме `.env.example`.
