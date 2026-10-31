@@ -125,7 +125,7 @@ test('only opened stores load and viewed classifications survive a reload', asyn
   const search = page.getByRole('textbox', { name: 'Roblox username, user ID, or profile link' });
   await search.fill('Beta');
   await search.press('Enter');
-  await expect(page).toHaveURL(/\?u=Beta$/);
+  await expect(page).toHaveURL(/\?u=Beta(&tab=groups)?$/);
   await expect(page.getByRole('button', { name: 'Viewed group stores (3)' })).toBeVisible();
   expect(requestedGroups).toEqual([101, 102, 102, 103, 103, 103, 103, 101]);
 });

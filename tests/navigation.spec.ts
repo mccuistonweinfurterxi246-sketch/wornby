@@ -25,7 +25,7 @@ test('browser back and forward restore profiles without adding history entries',
   await search.fill('Alpha');
   await search.press('Enter');
   await expect(page).toHaveURL(/\?u=Alpha$/);
-  await expect(page.getByTitle('Return to Hero Search')).toBeVisible();
+  await expect(page.getByTitle('Back to search')).toBeVisible();
 
   await search.fill('Beta');
   await search.press('Enter');
@@ -34,19 +34,19 @@ test('browser back and forward restore profiles without adding history entries',
 
   await page.goBack();
   await expect(page).toHaveURL(/\?u=Alpha$/);
-  await expect(page.getByTitle('Return to Hero Search')).toBeVisible();
+  await expect(page.getByTitle('Back to search')).toBeVisible();
   expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
 
   await page.goForward();
   await expect(page).toHaveURL(/\?u=Beta$/);
-  await expect(page.getByTitle('Return to Hero Search')).toBeVisible();
+  await expect(page.getByTitle('Back to search')).toBeVisible();
 
   await search.fill('Gamma');
   await search.press('Enter');
-  await expect(page.getByText('LOADING TELEMETRY…')).toBeVisible();
-  await page.getByTitle('Return to Hero Search').click();
+  await expect(page.getByText('LOADING PROFILE…')).toBeVisible();
+  await page.getByTitle('Back to search').click();
   await expect(page).toHaveURL('http://127.0.0.1:5173/');
-  await expect(page.getByTitle('Return to Hero Search')).toHaveCount(0);
+  await expect(page.getByTitle('Back to search')).toHaveCount(0);
   await page.waitForTimeout(700);
-  await expect(page.getByTitle('Return to Hero Search')).toHaveCount(0);
+  await expect(page.getByTitle('Back to search')).toHaveCount(0);
 });

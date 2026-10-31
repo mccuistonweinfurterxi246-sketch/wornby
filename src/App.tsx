@@ -8,6 +8,8 @@ import { AudioHaptics } from './components/AudioHaptics';
 import { usePlayerHistory } from './hooks/usePlayerHistory';
 import { ViewedGroupsDrawer } from './components/ViewedGroupsDrawer';
 
+const DEFAULT_TITLE = document.title;
+
 const Stage2Inspector = React.lazy(() => import('./components/Stage2Inspector').then((module) => ({ default: module.Stage2Inspector })));
 
 export const App: React.FC = () => {
@@ -15,7 +17,7 @@ export const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [streamingValuation, setStreamingValuation] = useState<{ totalValueRobux: number; pricedCount: number; seen: number; total: number } | null>(null);
-  const { lastPlayer, recordPlayer } = usePlayerHistory();
+  const { recordPlayer } = usePlayerHistory();
   // race protection
   const searchSeqRef = React.useRef(0);
   const abortRef = React.useRef<AbortController | null>(null);
@@ -50,10 +52,13 @@ export const App: React.FC = () => {
         displayName: data.user.displayName,
         headshotUrl: data.thumbnails.headshotUrl,
       });
-      try { localStorage.setItem('wornby_last_roblox_username', data.user.name); } catch {}
 
       // Update URL search query without page reload
       const url = new URL(window.location.href);
+      // an open-store link belongs to the previous player (the tab carries over, like the view does)
+      if (historyMode === 'push' && url.searchParams.get('u')?.toLowerCase() !== data.user.name.toLowerCase()) {
+        url.searchParams.delete('store');
+      }
       url.searchParams.set('u', data.user.name);
       if (historyMode === 'push') window.history.pushState({}, '', url.toString());
       else if (historyMode === 'replace') window.history.replaceState({}, '', url.toString());
@@ -85,14 +90,15 @@ export const App: React.FC = () => {
     setProfileData(null);
     setErrorMessage(null);
     const url = new URL(window.location.href);
-    url.searchParams.delete('u');
+    ['u', 'tab', 'store'].forEach((key) => url.searchParams.delete(key));
     window.history.pushState({}, '', url.toString());
   }, []);
 
   // Initial check for ?u=username URL param + back/forward handling
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const initialUser = params.get('u') || lastPlayer?.name || localStorage.getItem('wornby_last_roblox_username');
+    // only a link opens a profile; a bare visit shows the start page with recent players
+    const initialUser = params.get('u');
     if (initialUser && initialUser.trim()) {
       handleSearch(initialUser.trim(), false, 'replace');
     }
@@ -113,6 +119,10 @@ export const App: React.FC = () => {
     return () => { window.removeEventListener('popstate', onPopState); abortRef.current?.abort(); };
   }, [handleSearch]);
 
+  useEffect(() => {
+    document.title = profileData ? `${profileData.user.displayName} (@${profileData.user.name}) · Syntax3` : DEFAULT_TITLE;
+  }, [profileData]);
+
   return (
     <div className="relative min-h-screen font-sans">
       {/* Global Grain Noise Texture */}
@@ -123,7 +133,7 @@ export const App: React.FC = () => {
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 pointer-events-none" aria-live="polite" aria-busy="true">
           <div className="px-4 py-2 rounded-xl bg-black/80 backdrop-blur-md border border-white/10 text-xs font-mono text-white/80 flex items-center gap-3 shadow-xl">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>{streamingValuation ? `VALUING ${streamingValuation.seen}/${streamingValuation.total} • ${streamingValuation.totalValueRobux.toLocaleString()} R$` : 'LOADING TELEMETRY…'}</span>
+            <span>{streamingValuation ? `VALUING ${streamingValuation.seen}/${streamingValuation.total} • ${streamingValuation.totalValueRobux.toLocaleString()} R$` : 'LOADING PROFILE…'}</span>
             {streamingValuation && <span className="text-white/40">({streamingValuation.pricedCount} priced)</span>}
           </div>
         </div>

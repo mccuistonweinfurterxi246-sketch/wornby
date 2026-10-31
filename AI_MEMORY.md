@@ -32,9 +32,18 @@
 - Меняешь `CopiedGroupsFolder.tsx` → консоль не должна иметь `validateDOMNesting`.
 
 **Куда улучшать дальше:**
-- Сжать `vite` чанк (~520kb) via `manualChunks` / ленивую загрузку `GroupStoreModal`.
+- Превью ссылок для отдельного профиля (нужен Vercel Routing Middleware на `/`: статика отдаёт `/` раньше rewrites).
 
 ## История изменений
+
+### [2026-10-31 — Стартовая страница, понятные метрики, ссылки на вкладки и магазины]
+- Голый визит `/` больше не открывает последнего игрока: профиль открывает только `?u=`. Недавние игроки — кнопки под поиском (`Stage1Hero`).
+- Карточка «Telemetry latency» заменена на «Top item» (самая дорогая вещь). Без покупаемых вещей стоимость — `—` + «NOTHING FOR SALE · N OFF-SALE». Убраны ярлыки ORIGIN / TELEMETRY / AVATAR_RENDER.
+- Ссылки: `?tab=fits|groups` (replaceState в `Stage2Inspector`) и `?store=<groupId>` (пишет сам `GroupStoreModal` через `lib/urlParams.ts`; работает с `?u=` и без него). При поиске нового игрока `store` удаляется.
+- Сохранённые группы — только `wornby_copied_groups_folder_v1`. Старый список ID `wornby_copied_groups` один раз сливается в папку (`lib/savedGroups.ts#mergeLegacyIds`, записи-заглушки `needsDetails` дозаполняются через `/api/group/:id`) и удаляется после успешной записи.
+- `GroupStoreModal` и `FavoritesDrawer` грузятся лениво при первом открытии (`components/lazyPanels.tsx`, `useMountedOnce` сохраняет анимацию закрытия). Главный чанк 524 → 471 kB.
+- Мобильная вёрстка: сначала досье и метрики, потом аватар; плавающая кнопка «Viewed stores» на телефоне — только иконка; `pb-24` у `main`.
+- Полное название роли в карточках групп и папке. OG/Twitter-мета + `public/og.png`; `document.title` = игрок.
 
 ### [2026-10-31 — Плавность прокрутки и фона (измерено в Chrome на 180 Гц)]
 - Фон `Balatro` рендерится в Web Worker на `OffscreenCanvas` (`ui/balatro.worker.ts`, общий код в `ui/balatroScene.ts`); без поддержки — тот же цикл в главном потоке. Раньше каждый кадр фона ждал рендеринг страницы: в магазине на 1200 вещей фон падал до 19–40 fps (до 97% кадров >25 мс), теперь 60 fps, p95 ≈17 мс.

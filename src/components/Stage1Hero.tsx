@@ -1,11 +1,12 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Heart } from 'lucide-react';
+import { Heart, UserRound } from 'lucide-react';
 import Balatro from './ui/Balatro';
 import { useFavorites } from '../hooks/useFavorites';
-import { FavoritesDrawer } from './FavoritesDrawer';
-import { GroupStoreModal } from './GroupStoreModal';
+import { usePlayerHistory } from '../hooks/usePlayerHistory';
 import { PlayerSearch } from './PlayerSearch';
+import { FavoritesDrawer, GroupStoreModal, useMountedOnce } from './lazyPanels';
+import { fetchLinkedGroup, readStoreParam } from '../lib/urlParams';
 
 interface Stage1HeroProps {
   onSearch: (query: string) => void;
@@ -15,8 +16,21 @@ interface Stage1HeroProps {
 
 export const Stage1Hero: React.FC<Stage1HeroProps> = ({ onSearch, isLoading, errorMessage }) => {
   const [isFavoritesOpen, setIsFavoritesOpen] = useState(false);
-  const [storeModalGroup, setStoreModalGroup] = useState<{ id: number; name: string } | null>(null);
+  const [storeModalGroup, setStoreModalGroup] = useState<{ id: number; name: string; memberCount?: number } | null>(null);
   const { favoritesCount } = useFavorites();
+  const { recentPlayers } = usePlayerHistory();
+  const favoritesMounted = useMountedOnce(isFavoritesOpen);
+  const storeMounted = useMountedOnce(!!storeModalGroup);
+
+  // ?store=<groupId> without a player opens that store straight from the start page
+  useEffect(() => {
+    const id = readStoreParam();
+    // with ?u= the profile view opens the store once the player loads
+    if (!id || new URLSearchParams(window.location.search).has('u')) return;
+    let cancelled = false;
+    fetchLinkedGroup(id).then((group) => { if (!cancelled) setStoreModalGroup(group); });
+    return () => { cancelled = true; };
+  }, []);
 
   return (
     <div className="relative min-h-[100dvh] w-full flex flex-col items-center justify-center overflow-hidden px-4 sm:px-6">
@@ -70,6 +84,26 @@ export const Stage1Hero: React.FC<Stage1HeroProps> = ({ onSearch, isLoading, err
 
         <PlayerSearch onSearch={onSearch} isLoading={isLoading} />
 
+        {recentPlayers.length > 0 && (
+          <nav aria-label="Recent players" className="mt-4 flex max-w-full flex-wrap items-center justify-center gap-2">
+            {recentPlayers.slice(0, 5).map((player) => (
+              <button
+                key={player.id}
+                type="button"
+                onClick={() => onSearch(player.name)}
+                disabled={isLoading}
+                className="flex max-w-[11rem] items-center gap-2 rounded-full border border-white/10 bg-black/40 py-1 pl-1 pr-3 text-xs font-mono text-white/70 backdrop-blur-xl transition-colors hover:border-white/25 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60 disabled:opacity-40"
+                title={`Open @${player.name}`}
+              >
+                {player.headshotUrl
+                  ? <img src={player.headshotUrl} alt="" referrerPolicy="no-referrer" className="h-6 w-6 shrink-0 rounded-full bg-white/5 object-cover" />
+                  : <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/[0.08]"><UserRound className="h-3 w-3 text-white/50" /></span>}
+                <span className="truncate">{player.name}</span>
+              </button>
+            ))}
+          </nav>
+        )}
+
         {/* Error Notification Pill */}
         {errorMessage && (
           <div role="alert" aria-live="polite" className="mt-4 px-4 py-2 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-xs font-mono flex items-center gap-2 motion-safe:animate-bounce">
@@ -80,21 +114,21 @@ export const Stage1Hero: React.FC<Stage1HeroProps> = ({ onSearch, isLoading, err
       </div>
 
       {/* Favorites & Wishlist Drawer */}
-      <FavoritesDrawer
+      {favoritesMounted && <React.Suspense fallback={null}><FavoritesDrawer
         isOpen={isFavoritesOpen}
         onClose={() => setIsFavoritesOpen(false)}
         onOpenGroupStore={(gid, gname) => {
           setIsFavoritesOpen(false);
           setStoreModalGroup({ id: gid, name: gname });
         }}
-      />
+      /></React.Suspense>}
 
-      {/* Group Catalog Store Modal (if opened from favorites) */}
-      <GroupStoreModal
+      {/* Group Catalog Store Modal (if opened from favorites or a ?store= link) */}
+      {storeMounted && <React.Suspense fallback={null}><GroupStoreModal
         isOpen={!!storeModalGroup}
         onClose={() => setStoreModalGroup(null)}
         group={storeModalGroup}
-      />
+      /></React.Suspense>}
     </div>
   );
 };

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Search, Store, X } from 'lucide-react';
-import { GroupStoreModal } from './GroupStoreModal';
+import { GroupStoreModal, useMountedOnce } from './lazyPanels';
 import { GroupAnalysisSummary } from './GroupAnalysisSummary';
 import { ViewedGroup, ViewedGroupCategory, useViewedGroups } from '../hooks/useViewedGroups';
 
@@ -19,6 +19,7 @@ export const ViewedGroupsDrawer: React.FC = () => {
   const [selectedGroup, setSelectedGroup] = useState<ViewedGroup | null>(null);
   const [filter, setFilter] = useState<'all' | ViewedGroupCategory>('all');
   const [query, setQuery] = useState('');
+  const storeMounted = useMountedOnce(!!selectedGroup);
 
   const filteredGroups = useMemo(() => viewedGroups.filter((group) =>
     (filter === 'all' || group.category === filter) && group.name.toLowerCase().includes(query.trim().toLowerCase())
@@ -40,7 +41,7 @@ export const ViewedGroupsDrawer: React.FC = () => {
         className="fixed bottom-4 right-4 z-40 flex items-center gap-2 rounded-xl border border-white/20 bg-neutral-950/95 px-4 py-3 text-xs font-mono font-semibold text-white shadow-[0_12px_36px_rgba(0,0,0,0.5)] transition-colors hover:bg-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 sm:bottom-6 sm:right-6"
       >
         <Store className="h-4 w-4 text-cyan-300" />
-        <span>VIEWED STORES</span>
+        <span className="hidden sm:inline">VIEWED STORES</span>
         <span className="rounded-md bg-white/10 px-1.5 py-0.5 tabular-nums text-white/70">{viewedGroups.length}</span>
       </button>
 
@@ -79,7 +80,7 @@ export const ViewedGroupsDrawer: React.FC = () => {
         </div>
       )}
 
-      <GroupStoreModal isOpen={!!selectedGroup} group={selectedGroup} onClose={() => setSelectedGroup(null)} />
+      {storeMounted && <React.Suspense fallback={null}><GroupStoreModal isOpen={!!selectedGroup} group={selectedGroup} onClose={() => setSelectedGroup(null)} /></React.Suspense>}
     </>
   );
 };

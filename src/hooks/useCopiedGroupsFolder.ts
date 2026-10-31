@@ -1,25 +1,30 @@
 import { useCallback, useEffect, useState } from 'react';
 import { RobloxGroupMembership } from '../types/roblox';
 import { API_BASE } from '../services/api';
+import { CopiedGroupEntry, mergeLegacyIds } from '../lib/savedGroups';
 
-export interface CopiedGroupEntry extends RobloxGroupMembership {
-  copiedAt: number;
-  sourceUserName?: string;
-  sourceUserId?: number;
-  memberCountAtCopy: number;
-}
+export type { CopiedGroupEntry };
 
 const STORAGE_KEY = 'wornby_copied_groups_folder_v1';
+// Old ID-only list kept by the profile view; migrated into the folder on first load.
 const LEGACY_KEY = 'wornby_copied_groups';
 
 function load(): CopiedGroupEntry[] {
   try {
     if (typeof window === 'undefined') return [];
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed as CopiedGroupEntry[];
-    }
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    const entries = Array.isArray(parsed) ? parsed as CopiedGroupEntry[] : [];
+    const legacyRaw = localStorage.getItem(LEGACY_KEY);
+    if (legacyRaw === null) return entries;
+    // one-time migration: the folder becomes the only store of saved groups
+    let legacyIds: unknown = null;
+    try { legacyIds = JSON.parse(legacyRaw); } catch {}
+    const merged = mergeLegacyIds(entries, legacyIds);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+      localStorage.removeItem(LEGACY_KEY); // only once the merged folder is safely written
+    } catch {}
+    return merged;
   } catch {}
   return [];
 }
@@ -27,7 +32,6 @@ function load(): CopiedGroupEntry[] {
 function save(entries: CopiedGroupEntry[]) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-    localStorage.setItem(LEGACY_KEY, JSON.stringify(entries.map(e=>e.id)));
   } catch {}
 }
 
@@ -42,9 +46,33 @@ export function useCopiedGroupsFolder() {
     return () => window.removeEventListener('storage', onStorage);
   }, []);
 
+  // Fill in names and member counts for groups migrated from the old ID-only list.
+  useEffect(() => {
+    const pending = entries.filter((e) => e.needsDetails).slice(0, 20);
+    if (pending.length === 0) return;
+    let cancelled = false;
+    void Promise.all(pending.map((e) => fetch(`${API_BASE}/group/${e.id}`).then((r) => (r.ok ? r.json() : null)).catch(() => null))).then((infos) => {
+      if (cancelled) return;
+      const byId = new Map(infos.filter((info) => info?.id).map((info) => [info.id as number, info]));
+      if (byId.size === 0) return;
+      setEntries((prev) => {
+        const next = prev.map((e) => {
+          const info = byId.get(e.id);
+          if (!e.needsDetails || !info) return e;
+          const memberCount = typeof info.memberCount === 'number' ? info.memberCount : 0;
+          return { ...e, name: info.name || e.name, memberCount, memberCountAtCopy: memberCount, needsDetails: undefined };
+        });
+        save(next);
+        return next;
+      });
+    });
+    return () => { cancelled = true; };
+  }, [entries]);
+
   const add = useCallback((group: RobloxGroupMembership, source?: { name: string; id: number }) => {
     setEntries(prev => {
-      if (prev.some(e => e.id === group.id)) return prev;
+      const existing = prev.find(e => e.id === group.id);
+      if (existing && !existing.needsDetails) return prev;
       const entry: CopiedGroupEntry = {
         ...group,
         copiedAt: Date.now(),
@@ -52,7 +80,7 @@ export function useCopiedGroupsFolder() {
         sourceUserId: source?.id,
         memberCountAtCopy: group.memberCount,
       };
-      const next = [entry, ...prev].slice(0, 100);
+      const next = [entry, ...prev.filter(e => e.id !== group.id)].slice(0, 100);
       save(next);
       return next;
     });
@@ -72,7 +100,6 @@ export function useCopiedGroupsFolder() {
     setUpdates({});
     try {
       localStorage.removeItem(STORAGE_KEY);
-      localStorage.removeItem(LEGACY_KEY);
     } catch {}
   }, []);
 
@@ -92,7 +119,7 @@ export function useCopiedGroupsFolder() {
             ]);
 
             const currentMembers = typeof grpRes?.memberCount === 'number' ? grpRes.memberCount : entry.memberCount;
-            const delta = currentMembers - (entry.memberCountAtCopy || entry.memberCount);
+            const delta = entry.needsDetails ? 0 : currentMembers - (entry.memberCountAtCopy || entry.memberCount);
 
             const latestItems: { id: number; name: string; created?: string }[] = itemsRes?.items || [];
             const hasNew = latestItems.some(it => {

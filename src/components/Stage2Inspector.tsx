@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { RobloxUserProfileFull, RobloxGroupMembership } from '../types/roblox';
 import { AssetCard } from './AssetCard';
@@ -21,7 +21,7 @@ import {
   BadgeCheck,
   RefreshCw,
   Share2,
-  Flame,
+  Crown,
   ExternalLink,
   ArrowDownNarrowWide,
   ArrowUpWideNarrow,
@@ -33,8 +33,8 @@ import {
 import { useCopiedGroupsFolder } from '../hooks/useCopiedGroupsFolder';
 import { CopiedGroupsFolder } from './CopiedGroupsFolder';
 import { useFavorites } from '../hooks/useFavorites';
-import { GroupStoreModal } from './GroupStoreModal';
-import { FavoritesDrawer } from './FavoritesDrawer';
+import { FavoritesDrawer, GroupStoreModal, useMountedOnce } from './lazyPanels';
+import { fetchLinkedGroup, readStoreParam, setUrlParam } from '../lib/urlParams';
 import { PlayerSearch } from './PlayerSearch';
 
 const SavedOutfitsGallery = React.lazy(() => import('./SavedOutfitsGallery').then((module) => ({ default: module.SavedOutfitsGallery })));
@@ -47,6 +47,13 @@ interface Stage2InspectorProps {
 }
 
 type GroupSortOption = 'default' | 'members_desc' | 'members_asc' | 'rank_desc';
+type InspectorTab = 'outfit' | 'fits' | 'groups';
+const TABS: InspectorTab[] = ['outfit', 'fits', 'groups'];
+
+function readTabParam(): InspectorTab {
+  const tab = new URLSearchParams(window.location.search).get('tab');
+  return TABS.includes(tab as InspectorTab) ? tab as InspectorTab : 'outfit';
+}
 
 export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
   data,
@@ -54,7 +61,7 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
   onBackToHero,
   isLoading,
 }) => {
-  const [activeTab, setActiveTab] = useState<'outfit' | 'fits' | 'groups'>('outfit');
+  const [activeTab, setActiveTab] = useState<InspectorTab>(readTabParam);
   const [copiedAction, setCopiedAction] = useState<string | null>(null);
   const [groupSort, setGroupSort] = useState<GroupSortOption>('default');
 
@@ -63,26 +70,28 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
   const [isFavoritesOpen, setIsFavoritesOpen] = useState(false);
   const { favoritesCount } = useFavorites();
 
-  // Persistent copied groups memory (Set backed by localStorage) — SSR-safe + Folder
-  const [copiedGroupIds, setCopiedGroupIds] = useState<Set<number>>(() => {
-    try {
-      if (typeof window === 'undefined' || !window.localStorage) return new Set<number>();
-      const stored = localStorage.getItem('wornby_copied_groups');
-      if (stored) {
-        const arr = JSON.parse(stored);
-        if (Array.isArray(arr)) {
-          return new Set<number>(arr);
-        }
-      }
-    } catch {
-      // ignore
-    }
-    return new Set<number>();
-  });
-  // Folder — полные данные скопированных групп с временем, источником и проверкой новинок
+  // Saved groups live only in the folder; the old ID-only list is migrated by the hook.
   const folder = useCopiedGroupsFolder();
+  const copiedGroupIds = useMemo(() => new Set(folder.entries.map((entry) => entry.id)), [folder.entries]);
+  const favoritesMounted = useMountedOnce(isFavoritesOpen);
+  const storeMounted = useMountedOnce(!!storeModalGroup);
 
   const { user, thumbnails, outfit, groups, telemetry } = data;
+
+  // Open the store from a ?store= link once this player's groups are known.
+  useEffect(() => {
+    const id = readStoreParam();
+    if (!id) return;
+    const own = groups.find((g) => g.id === id);
+    if (own) { setStoreModalGroup(own); return; }
+    let cancelled = false;
+    fetchLinkedGroup(id).then((group) => { if (!cancelled) setStoreModalGroup(group); });
+    return () => { cancelled = true; };
+    // only on mount: later ?store= changes come from the modal itself
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => { setUrlParam('tab', activeTab === 'outfit' ? null : activeTab); }, [activeTab, user.id]);
 
   const copyTelemetryValue = async (text: string, actionKey: string) => {
     try {
@@ -104,31 +113,15 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
   };
 
   const handleSaveGroup = (group: RobloxGroupMembership) => {
-    setCopiedGroupIds((prev) => {
-      const next = new Set(prev);
-      next.add(group.id);
-      try { if (typeof window !== 'undefined') localStorage.setItem('wornby_copied_groups', JSON.stringify(Array.from(next))); } catch { /* ignore */ }
-      return next;
-    });
     folder.add(group, { name: data.user.name, id: data.user.id });
   };
 
   const handleClearCopiedMemory = () => {
     AudioHaptics.playClearCache();
-    setCopiedGroupIds(new Set());
     folder.clear();
-    try { if (typeof window !== 'undefined') localStorage.removeItem('wornby_copied_groups'); } catch { /* ignore */ }
   };
 
-  const handleRemoveSavedGroup = (groupId: number) => {
-    setCopiedGroupIds((prev) => {
-      const next = new Set(prev);
-      next.delete(groupId);
-      try { if (typeof window !== 'undefined') localStorage.setItem('wornby_copied_groups', JSON.stringify(Array.from(next))); } catch { /* ignore */ }
-      return next;
-    });
-    folder.remove(groupId);
-  };
+  const handleRemoveSavedGroup = folder.remove;
 
   // Multi-criteria sorting for Communities
   const sortedGroups = useMemo(() => {
@@ -155,20 +148,24 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
     return isNaN(d.getTime()) ? 'Unknown' : d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
   })();
 
-  // Subtitle calculation for Outfit Value widget
+  // Off-sale items have no price, so a 0 total means "nothing to buy", not "worthless".
+  const outfitValueLabel = outfit.totalValueRobux > 0
+    ? `${outfit.totalValueRobux.toLocaleString()} R$`
+    : outfit.freeCount > 0 && outfit.offSaleCount === 0 ? 'FREE' : '—';
+
   const getOutfitValueSubtitle = (): string => {
+    if (outfit.itemCount === 0) return 'NOTHING EQUIPPED';
     const parts: string[] = [];
-    if (outfit.offSaleCount > 0) {
-      parts.push(`+ ${outfit.offSaleCount} OFF-SALE / UGC`);
-    }
-    if (outfit.freeCount > 0) {
-      parts.push(`+ ${outfit.freeCount} FREE`);
-    }
-    if (parts.length === 0) {
-      return 'PRICED ON CATALOG';
-    }
-    return parts.join(' ');
+    if (outfit.totalValueRobux <= 0 && outfit.offSaleCount > 0) parts.push('NOTHING FOR SALE');
+    if (outfit.offSaleCount > 0) parts.push(`${outfit.offSaleCount} OFF-SALE${outfit.totalValueRobux > 0 ? ' NOT COUNTED' : ''}`);
+    if (outfit.freeCount > 0) parts.push(`${outfit.freeCount} FREE`);
+    return parts.length ? parts.join(' · ') : 'CURRENT CATALOG PRICES';
   };
+
+  const topItem = useMemo(() => outfit.items.reduce<(typeof outfit.items)[number] | null>(
+    (best, item) => !item.isDeletedOrModerated && item.price !== null && item.price > 0 && (!best || item.price > (best.price ?? 0)) ? item : best,
+    null,
+  ), [outfit.items]);
 
   // High-End Editorial Bio Formatter (interactive links + quoted callouts)
   const renderFormattedBio = (text: string) => {
@@ -249,7 +246,7 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(0,0,0,0.3)_0%,rgba(0,0,0,0.85)_100%)]" />
       </div>
 
-      <main className="relative min-h-screen w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 md:py-12 flex flex-col gap-8">
+      <main className="relative min-h-screen w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 pb-24 md:py-12 md:pb-28 flex flex-col gap-8">
         {/* Top Floating Control Bar */}
       <header className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -259,15 +256,15 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
               onBackToHero();
             }}
             className="p-2.5 rounded-xl bg-white/[0.04] backdrop-blur-md hover:bg-white/[0.08] text-white/70 hover:text-white border border-white/[0.06] transition-all flex items-center gap-2 font-mono text-xs"
-            title="Return to Hero Search"
+            title="Back to search"
           >
             <ArrowLeft className="w-4 h-4" />
-            <span className="hidden sm:inline">ORIGIN</span>
+            <span className="hidden sm:inline">BACK</span>
           </button>
 
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/[0.03] backdrop-blur-md border border-white/[0.05] text-xs font-mono text-white/50">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>ROBLOX TELEMETRY STREAM</span>
+            <span>ROBLOX PROFILE</span>
             {telemetry.cached && (
               <span className="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 text-[10px] border border-cyan-500/20">
                 CACHED
@@ -302,21 +299,17 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
 
       {/* Hero Telemetry Section: User Dossier & Avatar (Bento Redesign) */}
       <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-        {/* Left: 3D Avatar Render Showcase */}
-        <div className="lg:col-span-4 flex flex-col">
+        {/* Left: avatar render (after the dossier on phones so name and stats come first) */}
+        <div className="order-2 lg:order-none lg:col-span-4 flex flex-col">
           <TiltCard maxTilt={8} scale={1.01} className="h-full">
             <div className="w-full transition-all duration-300 rounded-2xl bg-black/40 backdrop-blur-xl border border-white/10 shadow-2xl h-full flex flex-col">
               <div className="p-5 flex-1 flex flex-col items-center justify-between relative overflow-hidden">
-                {/* Background telemetry matrix */}
                 <div className="absolute top-3 left-3 text-[10px] font-mono text-white/20 tracking-widest">
-                  AVATAR_RENDER // 3D
-                </div>
-                <div className="absolute top-3 right-3 text-[10px] font-mono text-white/20 tracking-widest">
-                  420x420 PNG
+                  AVATAR
                 </div>
 
                 {/* Avatar Display */}
-                <div className="relative w-full max-w-[280px] aspect-square flex items-center justify-center my-4">
+                <div className="relative w-full max-w-[200px] sm:max-w-[280px] aspect-square flex items-center justify-center my-4">
                   <div className="absolute inset-0 bg-gradient-to-b from-transparent via-cyan-950/10 to-transparent rounded-full blur-2xl pointer-events-none" />
                   {thumbnails.fullBodyUrl ? (
                     <img
@@ -331,7 +324,7 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
                     />
                   ) : (
                     <div className="w-32 h-32 rounded-full bg-white/[0.04] border border-white/[0.06] flex items-center justify-center text-white/30 font-mono text-sm">
-                      NO 3D AVATAR
+                      NO AVATAR IMAGE
                     </div>
                   )}
                 </div>
@@ -364,7 +357,7 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
         </div>
 
         {/* Right: User Dossier & Editorial Bento Station */}
-        <div className="lg:col-span-8 flex flex-col">
+        <div className="order-1 lg:order-none lg:col-span-8 flex flex-col">
           <div className="w-full transition-all duration-300 rounded-2xl bg-black/40 backdrop-blur-xl border border-white/10 shadow-2xl h-full">
             <div className="p-6 flex flex-col justify-between h-full space-y-6">
               {/* Top Row: Identity Header */}
@@ -426,7 +419,7 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
                   <div className="w-full rounded-xl bg-muted/30 border border-dashed border-border p-3.5 flex flex-wrap items-center justify-between gap-2 text-xs font-mono text-white/40">
                     <div className="flex items-center gap-2">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400/80 motion-safe:animate-pulse" />
-                      <span>NO PUBLIC BIO PROVIDED // VERIFIED ACTIVE TELEMETRY</span>
+                      <span>NO PUBLIC BIO</span>
                     </div>
                     <span className={`text-[10px] tracking-wider uppercase px-2 py-0.5 rounded border ${user.isBanned ? 'bg-red-500/10 text-red-400 border-red-500/20' : 'bg-white/[0.03] text-white/30 border-white/[0.04]'}`}>
                       {user.isBanned ? 'ACCOUNT BANNED' : 'ACCOUNT ACTIVE'}
@@ -447,9 +440,9 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
                       </span>
                     </div>
                     <div className="text-xl sm:text-2xl font-bold font-mono text-foreground tracking-tight">
-                      {outfit.totalValueRobux > 0 ? `${outfit.totalValueRobux.toLocaleString()} R$` : '0 R$'}
+                      {outfitValueLabel}
                     </div>
-                    <span className="text-[10px] font-mono text-white/40 mt-1.5 truncate" title={getOutfitValueSubtitle()}>
+                    <span className="text-[10px] font-mono text-white/40 mt-1.5 line-clamp-2 break-words" title={getOutfitValueSubtitle()}>
                       {getOutfitValueSubtitle()}
                     </span>
                   </CardContent>
@@ -491,21 +484,20 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
                   </CardContent>
                 </Card>
 
-                {/* Metric 4: API Response Time */}
+                {/* Metric 4: Most expensive equipped item */}
                 <Card className="bg-black/40 backdrop-blur-md border border-white/5 hover:border-white/20 transition-all duration-200">
                   <CardContent className="p-4 flex flex-col justify-between h-full">
                     <div className="flex items-center justify-between text-white/40 text-xs font-mono mb-2">
-                      <span className="tracking-wider">TELEMETRY LATENCY</span>
-                      <div className="flex items-center gap-1.5">
-                        <span className={`w-2 h-2 rounded-full ${telemetry.responseTimeMs < 50 ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-amber-400'} animate-pulse`} />
-                        <Flame className="w-3 h-3 text-amber-400" />
-                      </div>
+                      <span className="tracking-wider">TOP ITEM</span>
+                      <span className="p-1 rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                        <Crown className="w-3 h-3" />
+                      </span>
                     </div>
                     <div className="text-xl sm:text-2xl font-bold font-mono text-foreground tracking-tight">
-                      {telemetry.responseTimeMs}ms
+                      {topItem ? `${topItem.price!.toLocaleString()} R$` : '—'}
                     </div>
-                    <span className={`text-[10px] font-mono mt-1.5 ${telemetry.cached ? 'text-emerald-400' : 'text-cyan-400'}`}>
-                      {telemetry.cached ? 'FAST LRU HIT' : 'LIVE DISPATCH'}
+                    <span className="text-[10px] font-mono text-white/40 mt-1.5 line-clamp-2 break-words" title={topItem?.name}>
+                      {topItem ? topItem.name : 'NO PRICED ITEMS'}
                     </span>
                   </CardContent>
                 </Card>
@@ -518,7 +510,7 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
       {/* Tabs Navigation */}
       <Tabs value={activeTab} onValueChange={(val) => {
         AudioHaptics.playTabSelect();
-        setActiveTab(val as 'outfit' | 'fits' | 'groups');
+        setActiveTab(val as InspectorTab);
       }} className="w-full">
         <section className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-white/[0.08] pb-4 gap-4">
           <div className="max-w-full overflow-x-auto no-scrollbar">
@@ -541,7 +533,7 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
           {outfit.offSaleCount > 0 && activeTab === 'outfit' && (
             <div className="flex items-center gap-1.5 text-xs font-mono text-amber-300 bg-amber-500/10 px-3 py-1 rounded-lg border border-amber-500/20">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
-              <span>{outfit.offSaleCount} OFF-SALE / UGC ASSET{outfit.offSaleCount > 1 ? 'S' : ''} DETECTED</span>
+              <span>{outfit.offSaleCount} OFF-SALE ITEM{outfit.offSaleCount > 1 ? 'S' : ''} · NOT IN VALUE</span>
             </div>
           )}
         </section>
@@ -737,7 +729,7 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
     </main>
 
     {/* Group Catalog Store Modal */}
-    <GroupStoreModal
+    {storeMounted && <React.Suspense fallback={null}><GroupStoreModal
       isOpen={!!storeModalGroup}
       onClose={() => setStoreModalGroup(null)}
       group={storeModalGroup}
@@ -745,17 +737,17 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
       savedGroups={folder.entries}
       onSaveGroup={handleSaveGroup}
       onRemoveSavedGroup={handleRemoveSavedGroup}
-    />
+    /></React.Suspense>}
 
     {/* Favorites & Wishlist Drawer */}
-    <FavoritesDrawer
+    {favoritesMounted && <React.Suspense fallback={null}><FavoritesDrawer
       isOpen={isFavoritesOpen}
       onClose={() => setIsFavoritesOpen(false)}
       onOpenGroupStore={(gid, gname) => {
         setIsFavoritesOpen(false);
         setStoreModalGroup({ id: gid, name: gname });
       }}
-    />
+    /></React.Suspense>}
     </>
   );
 };

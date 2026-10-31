@@ -112,21 +112,16 @@ export const GroupCard: React.FC<GroupCardProps> = ({
               </div>
             </div>
 
-            {/* Bottom Role & Rank Section with Strict 1-Line Layout */}
+            {/* Role: full name on its own line instead of being cut off next to the actions */}
+            <p className="text-xs text-muted-foreground font-medium break-words line-clamp-2" title={group.roleName}>
+              {group.roleName}
+            </p>
+
+            {/* Bottom: rank badge + actions */}
             <div className="pt-2.5 border-t border-white/[0.06] flex items-center justify-between gap-2 w-full mt-auto">
-              {/* Left: Rank Badge + Truncated Role Title */}
-              <div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
-                <span className="shrink-0 px-1.5 py-0.5 rounded bg-muted text-[10px] font-mono text-muted-foreground border border-border whitespace-nowrap">
-                  RANK {group.roleRank}
-                </span>
-                <Tooltip content={<TooltipMono label="Role" hint={group.roleName} />} side="top">
-                  <span 
-                    className="text-xs text-muted-foreground truncate min-w-0 font-medium cursor-default"
-                  >
-                    {group.roleName}
-                  </span>
-                </Tooltip>
-              </div>
+              <span className="shrink-0 px-1.5 py-0.5 rounded bg-muted text-[10px] font-mono text-muted-foreground border border-border whitespace-nowrap">
+                RANK {group.roleRank}
+              </span>
 
               {/* Right: store and saved-folder actions */}
               <div className="flex items-center gap-1.5 shrink-0">

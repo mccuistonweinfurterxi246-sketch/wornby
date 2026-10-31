@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { setStoreParam } from '../lib/urlParams';
 import { RobloxAssetItem, RobloxGroupMembership } from '../types/roblox';
 import { RobloxApiClient } from '../services/api';
 import { useFavorites } from '../hooks/useFavorites';
@@ -344,6 +345,14 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   useEffect(() => {
     if (isOpen && activeGroup && (activeGroup.id === group?.id || manualGroupSelectionRef.current)) recordViewedGroup(activeGroup);
   }, [isOpen, activeGroup?.id, recordViewedGroup]);
+
+  // Keep ?store= pointing at the open store so the address bar is a shareable link.
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    if (isOpen && activeGroup) setStoreParam(activeGroup.id);
+    else if (!isOpen && wasOpenRef.current) setStoreParam(null);
+    wasOpenRef.current = isOpen;
+  }, [isOpen, activeGroup?.id]);
 
   // Handle ESC key to close
   useEffect(() => {

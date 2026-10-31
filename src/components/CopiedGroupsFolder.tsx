@@ -131,7 +131,7 @@ export const CopiedGroupsFolder: React.FC<{
 
                     <div className="flex items-center gap-1.5">
                       <span className="px-2 py-1 rounded-lg bg-white/[0.04] border border-white/10 text-[10px] font-mono font-medium text-white/60 flex items-center gap-1"><Award className="w-3 h-3 text-white/40" /> RANK {e.roleRank}</span>
-                      <span className="text-[11px] font-mono text-white/40 truncate flex-1">{e.roleName}</span>
+                      <span className="text-[11px] font-mono text-white/40 break-words line-clamp-2 flex-1" title={e.roleName}>{e.roleName}</span>
                     </div>
 
                     {/* Ownership status */}
