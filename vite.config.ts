@@ -7,6 +7,8 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    // cargo locks files in target/ while building; watching them crashes the dev server (EBUSY).
+    watch: { ignored: ['**/target/**'] },
     proxy: {
       '/api': {
         target: 'http://localhost:3001',

@@ -1,0 +1,54 @@
+{
+ "previousPageCursor": null,
+ "nextPageCursor": "10_1_563ba4f4c86285e00ba761ef3eb33f2d",
+ "data": [
+  {
+   "id": 2434560046,
+   "name": "Crossroads but with a million people",
+   "description": "[ Content Deleted ]",
+   "creator": {
+    "id": 261,
+    "type": "User"
+   },
+   "rootPlace": {
+    "id": 6504969480,
+    "type": "Place"
+   },
+   "created": "2021-03-11T18:19:47.947Z",
+   "updated": "2025-08-10T04:02:03.477Z",
+   "placeVisits": 24861
+  },
+  {
+   "id": 154946585,
+   "name": "Coming Soon",
+   "description": "",
+   "creator": {
+    "id": 261,
+    "type": "User"
+   },
+   "rootPlace": {
+    "id": 410071311,
+    "type": "Place"
+   },
+   "created": "2016-05-06T20:20:20.72Z",
+   "updated": "2019-04-05T15:38:02.097Z",
+   "placeVisits": 24
+  },
+  {
+   "id": 68409824,
+   "name": "Public Test Place",
+   "description": null,
+   "creator": {
+    "id": 261,
+    "type": "User"
+   },
+   "rootPlace": {
+    "id": 145723245,
+    "type": "Place"
+   },
+   "created": "2014-02-10T19:39:26.563Z",
+   "updated": "2020-06-02T22:03:31.183Z",
+   "placeVisits": 2297
+  }
+ ]
+}

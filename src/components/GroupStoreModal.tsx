@@ -1,13 +1,17 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { setStoreParam } from '../lib/urlParams';
-import { RobloxAssetItem, RobloxGroupMembership } from '../types/roblox';
+import { clearStoreParams, readGroupTab, setStoreParam, setUrlParam } from '../lib/urlParams';
+import { nextTrail, readTrail, writeTrail, type GroupTab, type TrailEntry } from '../lib/exploreTrail';
+import { ExploreTrail } from './explore/ExploreTrail';
+import { MemberGrid } from './explore/MemberGrid';
+import { ExperienceList } from './explore/ExperienceList';
+import { CreatorAssetGrid } from './explore/CreatorAssetGrid';
+import { GroupMember, RobloxAssetItem, RobloxGroupMembership, StoreSection, StoreSummary, copyableId } from '../types/roblox';
 import { RobloxApiClient } from '../services/api';
 import { useFavorites } from '../hooks/useFavorites';
 import { useClipboard } from '../hooks/useClipboard';
 import { useViewedGroups, ViewedGroupCategory } from '../hooks/useViewedGroups';
-import { classifyGroupItem } from '../lib/groupStoreAnalysis';
 import { GroupAnalysisSummary } from './GroupAnalysisSummary';
 import { QuickCopyStation } from './QuickCopyStation';
 import { Tooltip, TooltipMono } from './ui/tooltip';
@@ -44,10 +48,15 @@ interface GroupStoreModalProps {
   savedGroups?: RobloxGroupMembership[];
   onSaveGroup?: (group: RobloxGroupMembership) => boolean;
   onRemoveSavedGroup?: (groupId: number) => boolean;
+  /** Opens a member's full profile (keeps the explore trail). */
+  onOpenPlayer?: (member: GroupMember) => void;
+  onTrailNavigate?: (entry: TrailEntry) => void;
 }
 
+const GROUP_TAB_LABELS: [GroupTab, string][] = [['store', 'STORE'], ['experiences', 'EXPERIENCES'], ['members', 'MEMBERS'], ['assets', 'ASSETS']];
+
 type FilterCategory = 'all' | 'on_sale' | 'free' | 'off_sale';
-type CatalogKind = 'all' | 'clothing' | 'items';
+const SECTIONS: [StoreSection, string][] = [['clothing', 'CLOTHING'], ['accessories', 'ACCESSORIES'], ['heads', 'HEADS & FACES'], ['animations', 'ANIMATIONS']];
 type SortOption = 'RecentlyCreated' | 'PriceAsc' | 'PriceDesc';
 type PriceFilter = 'all' | 'free' | 'under100' | '100plus';
 
@@ -69,7 +78,7 @@ function loadStoredItems(): RobloxAssetItem[] {
   } catch { return []; }
 }
 
-function loadStoreView(): { filters: Record<string, { searchQuery: string; filterCategory: FilterCategory; catalogKind?: CatalogKind; priceFilter: PriceFilter; assetType: string; scrollTop: number }> } {
+function loadStoreView(): { filters: Record<string, { searchQuery: string; filterCategory: FilterCategory; section?: StoreSection; priceFilter: PriceFilter; scrollTop: number }> } {
   try {
     if (typeof window === 'undefined') return { filters: {} };
     const stored = JSON.parse(localStorage.getItem(STORE_VIEW_KEY) || '{"filters":{}}');
@@ -112,8 +121,25 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   savedGroups = EMPTY_GROUPS,
   onSaveGroup,
   onRemoveSavedGroup,
+  onOpenPlayer,
+  onTrailNavigate,
 }) => {
-  const { viewedGroups, recordViewedGroup, updateCatalogSummary } = useViewedGroups();
+  const [groupTab, setGroupTabState] = useState<GroupTab>(readGroupTab);
+  const setGroupTab = useCallback((tab: GroupTab) => {
+    setGroupTabState(tab);
+    setUrlParam('gtab', tab === 'store' ? null : tab);
+  }, []);
+  // A group opened from outside (card, link, back/forward) shows the section its URL names.
+  useEffect(() => {
+    if (isOpen) setGroupTabState(readGroupTab());
+  }, [isOpen, group?.id]);
+  // Back/forward restores the section from ?gtab=.
+  useEffect(() => {
+    const onPop = () => setGroupTabState(readGroupTab());
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  const { viewedGroups, recordViewedGroup, recordStoreSummary } = useViewedGroups();
   const [activeGroup, setActiveGroup] = useState<typeof group>(group);
   const [groupListSource, setGroupListSource] = useState<'player' | 'saved' | 'viewed'>('player');
   const [items, setItems] = useState<RobloxAssetItem[]>([]);
@@ -127,10 +153,13 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCategory, setFilterCategory] = useState<FilterCategory>('all');
-  const [catalogKind, setCatalogKind] = useState<CatalogKind>('all');
+  // Each section is its own Roblox catalog category; null until the group's counts pick one.
+  // Tied to its group, so reopening or switching never fetches with another group's section first.
+  const [sectionPick, setSectionPick] = useState<{ group: number; key: StoreSection } | null>(null);
+  const [summary, setSummary] = useState<StoreSummary | null>(null);
+  const section = sectionPick && sectionPick.group === activeGroup?.id ? sectionPick.key : null;
   const [sortOption, setSortOption] = useState<SortOption>('RecentlyCreated');
   const [priceFilter, setPriceFilter] = useState<PriceFilter>('all');
-  const [assetType, setAssetType] = useState('all');
   const [selectedItems, setSelectedItems] = useState<RobloxAssetItem[]>(loadStoredItems);
   const [selectionMode, setSelectionMode] = useState(false);
   const [isSelectionOpen, setIsSelectionOpen] = useState(false);
@@ -152,7 +181,6 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   const catalogAbortRef = useRef<AbortController | null>(null);
   const paginationInFlightRef = useRef(false);
   const draggedItemRef = useRef<RobloxAssetItem | null>(null);
-  const autoLoadRequestRef = useRef('');
   const itemsRef = useRef<RobloxAssetItem[]>([]);
   const manualGroupSelectionRef = useRef(false);
 
@@ -163,7 +191,8 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     sourceItems: RobloxAssetItem[],
     generation: number
   ) => {
-    let missingIds = Array.from(new Set(sourceItems.filter((item) => !item.thumbnailUrl).map((item) => item.id)));
+    // Bundles get their image from the server (bundle service); the asset service only has a placeholder.
+    let missingIds = Array.from(new Set(sourceItems.filter((item) => !item.thumbnailUrl && !item.catalogUrl.includes('/bundles/')).map((item) => item.id)));
     if (missingIds.length === 0) return;
     const signal = catalogAbortRef.current?.signal;
     for (let attempt = 0; attempt < 3 && missingIds.length > 0; attempt++) {
@@ -185,7 +214,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
 
   const fetchItems = useCallback(
     async (isInitial = true, cursor = '') => {
-      if (!activeGroup) return;
+      if (!activeGroup || !section) return;
       if (!isInitial && paginationInFlightRef.current) return;
       const generation = isInitial ? ++requestGenerationRef.current : requestGenerationRef.current;
       if (isInitial) {
@@ -209,7 +238,8 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
           sortOption,
           sortOrder,
           catalogAbortRef.current?.signal,
-          true
+          false,
+          section
         );
         if (generation !== requestGenerationRef.current) return;
         if (isInitial) {
@@ -222,7 +252,6 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
           setItems(mergedItems);
         }
         setNextCursor(res.nextPageCursor);
-        updateCatalogSummary(activeGroup.id, itemsRef.current, !res.nextPageCursor);
         setHasError(false);
         void hydrateThumbnails(res.items, generation);
       } catch {
@@ -240,11 +269,11 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
         if (generation === requestGenerationRef.current) paginationInFlightRef.current = false;
       }
     },
-    [activeGroup, hydrateThumbnails, sortOption, updateCatalogSummary]
+    [activeGroup, hydrateThumbnails, section, sortOption]
   );
 
   const loadAllRemaining = useCallback(async (silent = false) => {
-    if (!activeGroup || !nextCursor || loadingAll || loadingMore) return;
+    if (!activeGroup || !section || !nextCursor || loadingAll || loadingMore) return;
     setLoadingAll(true);
     const generation = requestGenerationRef.current;
     const signal = catalogAbortRef.current?.signal;
@@ -266,7 +295,8 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
               sortOption,
               sortOrder,
               signal,
-              true
+              false,
+              section
             );
             break;
           } catch (error) {
@@ -282,7 +312,6 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
         setItems(itemsRef.current);
         cur = res.nextPageCursor;
         setNextCursor(cur);
-        updateCatalogSummary(activeGroup.id, itemsRef.current, !cur);
         if (newItems.length > 0) void hydrateThumbnails(newItems, generation);
         if (!cur) break;
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -300,7 +329,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
         else toast.success('Loaded all items from group catalog!');
       }
     }
-  }, [activeGroup, hydrateThumbnails, loadingAll, loadingMore, nextCursor, sortOption, updateCatalogSummary]);
+  }, [activeGroup, hydrateThumbnails, loadingAll, loadingMore, nextCursor, section, sortOption]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -309,8 +338,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
       catalogAbortRef.current?.abort();
       return;
     }
-    if (activeGroup && (activeGroup.id === group?.id || manualGroupSelectionRef.current)) {
-      autoLoadRequestRef.current = '';
+    if (activeGroup && section && (activeGroup.id === group?.id || manualGroupSelectionRef.current)) {
       requestGenerationRef.current++;
       catalogAbortRef.current?.abort();
       itemsRef.current = [];
@@ -323,15 +351,24 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
       setHasError(false);
       fetchItems(true, '');
     }
-  }, [isOpen, activeGroup?.id, sortOption]);
+  }, [isOpen, activeGroup?.id, section, sortOption]);
 
+  // Exact counts per section from the server; they also pick the section to open (saved, else first non-empty).
   useEffect(() => {
-    if (!isOpen || !activeGroup || !nextCursor || loading || loadingAll || loadingMore) return;
-    const requestKey = `${activeGroup.id}:${sortOption}:${nextCursor}`;
-    if (autoLoadRequestRef.current === requestKey) return;
-    autoLoadRequestRef.current = requestKey;
-    void loadAllRemaining(true);
-  }, [activeGroup?.id, isOpen, items.length, loadAllRemaining, loading, loadingAll, loadingMore, nextCursor, sortOption]);
+    if (!isOpen || !activeGroup) return;
+    const groupId = activeGroup.id;
+    const ac = new AbortController();
+    setSummary(null);
+    const saved = storeView.current.filters[groupId]?.section;
+    RobloxApiClient.fetchGroupStoreSummary(groupId, ac.signal)
+      .then((counts) => {
+        setSummary(counts);
+        recordStoreSummary(groupId, counts);
+        setSectionPick({ group: groupId, key: saved ?? SECTIONS.find(([key]) => counts[key].count > 0)?.[0] ?? 'clothing' });
+      })
+      .catch(() => { if (!ac.signal.aborted) setSectionPick({ group: groupId, key: saved ?? 'clothing' }); });
+    return () => ac.abort();
+  }, [isOpen, activeGroup?.id, recordStoreSummary]);
 
   useEffect(() => {
     if (isOpen && group) {
@@ -346,15 +383,21 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     if (isOpen && activeGroup && (activeGroup.id === group?.id || manualGroupSelectionRef.current)) recordViewedGroup(activeGroup);
   }, [isOpen, activeGroup?.id, recordViewedGroup]);
 
-  // Keep ?store= pointing at the open store: opening and closing are back/forward steps, switching
-  // stores inside the modal just updates the link.
+  // Keep ?store= pointing at the open store: opening, switching and closing are back/forward steps.
   const wasOpenRef = useRef(false);
   useEffect(() => {
     if (isOpen && activeGroup) {
       // skip the render where activeGroup still holds the previously opened store
       if (activeGroup.id !== group?.id && !manualGroupSelectionRef.current) return;
-      setStoreParam(activeGroup.id, wasOpenRef.current ? 'replace' : 'push');
-    } else if (!isOpen && wasOpenRef.current) setStoreParam(null);
+      setStoreParam(activeGroup.id, 'push');
+      writeTrail(nextTrail(readTrail(), { kind: 'group', id: activeGroup.id, name: activeGroup.name, imageUrl: activeGroup.iconUrl ?? null }));
+    } else if (!isOpen && wasOpenRef.current) {
+      clearStoreParams();
+      // Back on the player: the trail ends at them again.
+      const trail = readTrail();
+      const player = [...trail].reverse().find((e) => e.kind === 'user');
+      if (player) writeTrail(nextTrail(trail, player));
+    }
     wasOpenRef.current = isOpen;
   }, [isOpen, activeGroup?.id]);
 
@@ -371,14 +414,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, isGroupsOpen, isSelectionOpen, onClose]);
 
-  const catalogCounts = useMemo(() => items.reduce((counts, item) => {
-    const kind = classifyGroupItem(item).kind;
-    if (kind === 'clothing' || kind === 'items') counts[kind]++;
-    return counts;
-  }, { clothing: 0, items: 0 }), [items]);
-  const kindItems = useMemo(() => catalogKind === 'all'
-    ? items
-    : items.filter((item) => classifyGroupItem(item).kind === catalogKind), [items, catalogKind]);
+  const kindItems = items;
 
   const filteredItems = useMemo(() => {
     return kindItems.filter((item) => {
@@ -386,7 +422,6 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
       if (filterCategory === 'on_sale' && (!item.isForSale || item.isFree)) return false;
       if (filterCategory === 'free' && !item.isFree) return false;
       if (filterCategory === 'off_sale' && item.isForSale) return false;
-      if (assetType !== 'all' && item.assetTypeName !== assetType) return false;
       if (priceFilter === 'free' && !item.isFree) return false;
       if (priceFilter === 'under100' && (item.price === null || item.price >= 100)) return false;
       if (priceFilter === '100plus' && (item.price === null || item.price < 100)) return false;
@@ -402,9 +437,8 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
       }
       return true;
     });
-  }, [kindItems, filterCategory, searchQuery, assetType, priceFilter]);
+  }, [kindItems, filterCategory, searchQuery, priceFilter]);
 
-  const assetTypes = useMemo(() => Array.from(new Set(kindItems.map((item) => item.assetTypeName).filter(Boolean))) as string[], [kindItems]);
   const missingImageCount = useMemo(() => items.filter((item) => !item.thumbnailUrl || failedImageIds.has(item.id)).length, [items, failedImageIds]);
   const retryMissingImages = async () => {
     if (retryingImages) return;
@@ -457,16 +491,12 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     if (saved) {
       setSearchQuery(saved.searchQuery);
       setFilterCategory(saved.filterCategory);
-      setCatalogKind(saved.catalogKind || 'all');
       setPriceFilter(saved.priceFilter);
-      setAssetType(saved.assetType);
       scrollPositions.current[activeGroup.id] = Number.isFinite(saved.scrollTop) ? saved.scrollTop : 0;
     } else {
       setSearchQuery('');
       setFilterCategory('all');
-      setCatalogKind('all');
       setPriceFilter('all');
-      setAssetType('all');
       scrollPositions.current[activeGroup.id] = 0;
     }
     pendingScrollRestoreRef.current = {
@@ -496,9 +526,10 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
 
   useEffect(() => {
     if (!activeGroup || !isOpen) return;
-    storeView.current.filters[activeGroup.id] = { searchQuery, filterCategory, catalogKind, priceFilter, assetType, scrollTop: scrollPositions.current[activeGroup.id] || 0 };
+    if (!section) return;
+    storeView.current.filters[activeGroup.id] = { searchQuery, filterCategory, section, priceFilter, scrollTop: scrollPositions.current[activeGroup.id] || 0 };
     try { localStorage.setItem(STORE_VIEW_KEY, JSON.stringify(storeView.current)); } catch {}
-  }, [activeGroup?.id, isOpen, searchQuery, filterCategory, catalogKind, priceFilter, assetType]);
+  }, [activeGroup?.id, isOpen, searchQuery, filterCategory, section, priceFilter]);
 
   const updateSelection = (next: RobloxAssetItem[]) => {
     setLastSelection(selectedItems);
@@ -539,14 +570,14 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
 
   const copySelected = async () => {
     const separator = copyFormat === 'comma' ? ', ' : copyFormat === 'space' ? ' ' : '\n';
-    const copied = await copy(selectedItems.map((item) => item.id).join(separator), 'store-items');
+    const copied = await copy(selectedItems.map(copyableId).join(separator), 'store-items');
     if (copied) toast.success('Copied!', { description: `${selectedItems.length} ID${selectedItems.length === 1 ? '' : 's'}` });
     else toast.error('Could not copy item IDs');
   };
 
   const copySelectedItemId = async (item: RobloxAssetItem) => {
-    const copiedId = await copy(String(item.id), `selected-item-${item.id}`);
-    if (copiedId) toast.success('Asset ID copied', { description: String(item.id) });
+    const copiedId = await copy(String(copyableId(item)), `selected-item-${item.id}`);
+    if (copiedId) toast.success('Asset ID copied', { description: String(copyableId(item)) });
     else toast.error('Could not copy asset ID');
   };
 
@@ -711,6 +742,34 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
           </div>
 
           {/* Search, Filters & Sorting Bar */}
+          {onTrailNavigate && <ExploreTrail onNavigate={onTrailNavigate} className="shrink-0 border-b border-white/[0.06] bg-black/40 px-3 py-1.5 sm:px-5" />}
+          <div role="tablist" aria-label="Group sections" className="flex shrink-0 gap-1 overflow-x-auto border-b border-white/[0.06] bg-black/60 px-3 py-2 no-scrollbar sm:px-5">
+            {GROUP_TAB_LABELS.map(([tab, label]) => (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                aria-selected={groupTab === tab}
+                onClick={() => setGroupTab(tab)}
+                className={`shrink-0 rounded-lg px-3 py-1.5 text-[11px] font-mono tracking-wide transition-colors ${groupTab === tab ? 'bg-white/15 text-white' : 'text-white/50 hover:bg-white/[0.06] hover:text-white'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {groupTab !== 'store' ? (
+            <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-5 fancy-scroll overscroll-contain">
+              {groupTab === 'members' && (
+                <MemberGrid
+                  groupId={currentGroup.id}
+                  onOpenPlayer={(m) => onOpenPlayer?.(m)}
+                />
+              )}
+              {groupTab === 'experiences' && <ExperienceList creator={{ kind: 'group', id: currentGroup.id }} />}
+              {groupTab === 'assets' && <CreatorAssetGrid creator={{ kind: 'group', id: currentGroup.id }} />}
+            </div>
+          ) : (<>
           <div className="z-20 shrink-0 border-b border-white/[0.06] bg-black/80 p-3 backdrop-blur-xl sm:p-4">
             <div className="grid items-center gap-2.5 lg:grid-cols-[minmax(220px,1fr)_auto] lg:gap-3">
             {/* Search Input */}
@@ -733,23 +792,22 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
               )}
             </div>
 
-            <div role="group" aria-label="Catalog type" className="grid grid-cols-3 gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1">
-              {([
-                ['all', 'All items', items.length],
-                ['clothing', 'Clothing', catalogCounts.clothing],
-                ['items', 'Items', catalogCounts.items],
-              ] as const).map(([kind, label, count]) => (
-                <button
-                  key={kind}
-                  type="button"
-                  aria-pressed={catalogKind === kind}
-                  onClick={() => { setCatalogKind(kind); setAssetType('all'); }}
-                  className={`flex h-9 min-w-0 items-center justify-center gap-1 rounded-lg px-2 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 sm:text-xs ${catalogKind === kind ? 'bg-white text-neutral-950' : 'text-white/65 hover:bg-white/[0.08] hover:text-white'}`}
-                >
-                  <span className="truncate">{label}</span>
-                  <span className={`tabular-nums ${catalogKind === kind ? 'text-neutral-500' : 'text-white/40'}`}>{count}</span>
-                </button>
-              ))}
+            <div role="group" aria-label="Store sections" className="grid grid-cols-2 gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1 sm:grid-cols-4">
+              {SECTIONS.map(([key, label]) => {
+                const count = summary?.[key];
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    aria-pressed={section === key}
+                    onClick={() => setSectionPick({ group: currentGroup.id, key })}
+                    className={`flex h-9 min-w-0 items-center justify-center gap-1.5 rounded-lg px-2 font-mono text-[10px] tracking-wide transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 sm:text-[11px] ${section === key ? 'bg-white text-neutral-950' : 'text-white/65 hover:bg-white/[0.08] hover:text-white'}`}
+                  >
+                    <span className="truncate">{label}</span>
+                    <span className={`tabular-nums ${section === key ? 'text-neutral-500' : 'text-white/40'}`}>{count ? `${count.count.toLocaleString()}${count.more ? '+' : ''}` : '…'}</span>
+                  </button>
+                );
+              })}
             </div>
 
             {/* Filter Pills & Sort Row */}
@@ -811,7 +869,6 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
 
               {/* Sort Dropdown */}
               <FilterMenu label="Sort catalog" icon={<ArrowUpDown className="w-3.5 h-3.5" />} value={sortOption} options={[['RecentlyCreated', 'Newest'], ['PriceAsc', 'Price: Low to High'], ['PriceDesc', 'Price: High to Low']]} onChange={(value) => setSortOption(value as SortOption)} />
-              <FilterMenu label="Asset type" value={assetType} options={[['all', 'All types'], ...assetTypes.map((type) => [type, type] as [string, string])]} onChange={setAssetType} />
               <FilterMenu label="Price range" value={priceFilter} options={ [['all', 'Any price'], ['free', 'Free'], ['under100', 'Under 100 R$'], ['100plus', '100+ R$']] } onChange={(value) => setPriceFilter(value as PriceFilter)} />
             </div>
             </div>
@@ -938,13 +995,10 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                 <p className="text-xs font-mono text-white/40 mt-1 max-w-sm">
                   {searchQuery
                     ? `No items matching "${searchQuery}" in this category.`
-                    : kindItems.length === 0 && catalogKind !== 'all'
-                      ? `No ${catalogKind === 'clothing' ? 'clothing' : 'other items'} found in this group.`
+                    : kindItems.length === 0
+                      ? `This group has no ${(SECTIONS.find(([key]) => key === section)?.[1] ?? 'items').toLowerCase()} in its store.`
                     : 'This group does not have any items matching the selected filter.'}
                 </p>
-                {catalogKind !== 'all' && (
-                  <button type="button" onClick={() => { setCatalogKind('all'); setAssetType('all'); }} className="mt-4 rounded-lg border border-white/20 px-3 py-2 text-xs text-white/80 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300">Show all items</button>
-                )}
               </div>
             ) : (
               <>
@@ -1016,7 +1070,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                 <button type="button" onClick={() => { if (lastSelection) { setSelectedItems(lastSelection); setLastSelection(null); } }} disabled={!lastSelection} className="p-2 rounded-lg border border-white/10 text-white/45 hover:text-white disabled:opacity-30" aria-label="Undo last selection"><Undo2 className="w-3.5 h-3.5" /></button>
               </div>
               <div className="flex-1 overflow-y-auto p-2 fancy-scroll">
-                {selectedItems.length === 0 ? <div className="flex h-full flex-col items-center justify-center text-center p-6"><ListFilter className="w-8 h-8 text-white/15 mb-3" /><p className="text-xs font-mono text-white/40">Click an item or drag it here.</p></div> : selectedItems.map((item) => <div key={item.id} className="flex items-center gap-2 p-2 rounded-xl hover:bg-white/[0.05]"><div className="w-10 h-10 rounded-lg bg-black/40 overflow-hidden shrink-0">{item.thumbnailUrl && <img src={item.thumbnailUrl} alt="" className="w-full h-full object-contain" />}</div><div className="min-w-0 flex-1"><div className="truncate text-xs text-white/85">{item.name}</div><div className="flex items-center gap-2 mt-0.5"><span className={`text-[10px] font-mono ${item.isForSale ? 'text-emerald-300/70' : 'text-amber-300/70'}`}>{item.isFree ? 'FREE' : item.isForSale && item.price !== null ? `${item.price.toLocaleString()} R$` : 'OFF-SALE'}</span><button type="button" onClick={() => void copySelectedItemId(item)} className="flex min-w-0 items-center gap-1 text-[10px] font-mono text-white/35 hover:text-white" aria-label={`Copy asset ID ${item.id}`}>{copied === `selected-item-${item.id}` ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}<span className="truncate">#{item.id}</span></button></div></div><button type="button" onClick={() => updateSelection(selectedItems.filter((selected) => selected.id !== item.id))} className="p-1.5 text-white/30 hover:text-rose-300" aria-label={`Remove ${item.name}`}><X className="w-3.5 h-3.5" /></button></div>)}
+                {selectedItems.length === 0 ? <div className="flex h-full flex-col items-center justify-center text-center p-6"><ListFilter className="w-8 h-8 text-white/15 mb-3" /><p className="text-xs font-mono text-white/40">Click an item or drag it here.</p></div> : selectedItems.map((item) => <div key={item.id} className="flex items-center gap-2 p-2 rounded-xl hover:bg-white/[0.05]"><div className="w-10 h-10 rounded-lg bg-black/40 overflow-hidden shrink-0">{item.thumbnailUrl && <img src={item.thumbnailUrl} alt="" className="w-full h-full object-contain" />}</div><div className="min-w-0 flex-1"><div className="truncate text-xs text-white/85">{item.name}</div><div className="flex items-center gap-2 mt-0.5"><span className={`text-[10px] font-mono ${item.isForSale ? 'text-emerald-300/70' : 'text-amber-300/70'}`}>{item.isFree ? 'FREE' : item.isForSale && item.price !== null ? `${item.price.toLocaleString()} R$` : 'OFF-SALE'}</span><button type="button" onClick={() => void copySelectedItemId(item)} className="flex min-w-0 items-center gap-1 text-[10px] font-mono text-white/35 hover:text-white" aria-label={`Copy asset ID ${copyableId(item)}`}>{copied === `selected-item-${item.id}` ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}<span className="truncate">#{copyableId(item)}</span></button></div></div><button type="button" onClick={() => updateSelection(selectedItems.filter((selected) => selected.id !== item.id))} className="p-1.5 text-white/30 hover:text-rose-300" aria-label={`Remove ${item.name}`}><X className="w-3.5 h-3.5" /></button></div>)}
               </div>
               <div className="p-3 border-t border-white/[0.08] space-y-2">
                 <FilterMenu className="w-full" label="Copy format" value={copyFormat} options={[['comma', 'Comma separated'], ['space', 'Space separated'], ['newline', 'One per line']]} onChange={(value) => setCopyFormat(value as typeof copyFormat)} />
@@ -1024,8 +1078,10 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
               </div>
             </aside>
           </div>
+          </>)}
 
           {/* Footer Bar */}
+          {groupTab === 'store' && (
           <div className="px-4 sm:px-6 py-2.5 sm:py-3 border-t border-white/[0.06] bg-black/40 backdrop-blur-md flex items-center justify-between text-[11px] sm:text-xs font-mono text-white/40 shrink-0">
             <span>
               Showing {filteredItems.length} of {items.length} loaded items
@@ -1034,6 +1090,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
               Press <kbd className="px-1.5 py-0.5 rounded bg-white/10 border border-white/10 text-white/70">ESC</kbd> to close
             </span>
           </div>
+          )}
         </motion.div>
       </div>
     </AnimatePresence>
@@ -1079,7 +1136,7 @@ const StoreItemCard = React.memo(function StoreItemCard({ item, actions, isWishl
       draggable={selectionMode}
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = 'copy';
-        event.dataTransfer.setData('text/plain', String(item.id));
+        event.dataTransfer.setData('text/plain', String(copyableId(item)));
         actions.onDragStart(item);
       }}
       className={`group relative flex flex-col justify-between rounded-xl sm:rounded-2xl p-2.5 sm:p-3 transition-all duration-200 shadow-sm h-full cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 ${isSelected ? 'bg-white/10 border-white/45' : 'bg-black/40 hover:bg-black/60 border-white/[0.07] hover:border-white/20'}`}
@@ -1160,7 +1217,7 @@ const StoreItemCard = React.memo(function StoreItemCard({ item, actions, isWishl
 
       {/* Quick Actions (Copy ID & Roblox Link) */}
       <QuickCopyStation
-        assetId={item.id}
+        assetId={copyableId(item)}
         studioLuaCommand={item.studioLuaCommand}
         catalogUrl={item.catalogUrl}
         assetName={item.name}

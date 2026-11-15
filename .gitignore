@@ -10,3 +10,9 @@ dist
 .tools/
 graphify-out/
 test-results/
+
+# Rust build output
+target/
+
+# Local agent scratch (plans, ledgers)
+.superpowers/

@@ -1,8 +1,8 @@
 import React from 'react';
-import { ViewedGroup } from '../hooks/useViewedGroups';
+import { ANALYSIS_VERSION, ViewedGroup } from '../hooks/useViewedGroups';
 
 function statusLabel(group?: ViewedGroup, analyzing = false): string {
-  if (!group || group.analysisVersion !== 2) return analyzing ? 'Checking…' : 'To check';
+  if (!group || group.analysisVersion !== ANALYSIS_VERSION) return analyzing ? 'Checking…' : 'To check';
   if (analyzing && group.complete) return 'Checking…';
   if (group.category === 'mixed') return `Mixed · ${group.totalCount}${group.complete ? '' : '+'}${analyzing ? ' · scanning' : ''}`;
   if (analyzing) return `Checking · ${group.totalCount}+`;

@@ -1,0 +1,57 @@
+{
+ "previousPageCursor": "eyJrZXkiOiI5MjIzMzcyMDM2ODU0Nzc1ODA3Iiwic29ydE9yZGVyIjoiQXNjIiwicGFnaW5nRGlyZWN0aW9uIjoiQmFja3dhcmQiLCJwYWdlTnVtYmVyIjoxLCJkaXNjcmltaW5hdG9yIjoiZ3JvdXBJZDoyIiwiY291bnQiOjEwfQoxNzdkNWE4NThmYTRjZDJjZDc4MTdjOTNiYjExNTUwYWRmZmM4ZTliYmU3ZmIxODhmY2IzMWM3Yzk1OGMzNWQ3",
+ "nextPageCursor": "eyJrZXkiOiJpZF8yendBQUFhSGRGSkdKeEJDMm51QVlCZGRQQTRTZVRNWmcwU1RNIiwic29ydE9yZGVyIjoiRGVzYyIsInBhZ2luZ0RpcmVjdGlvbiI6IkZvcndhcmQiLCJwYWdlTnVtYmVyIjoxLCJkaXNjcmltaW5hdG9yIjoiZ3JvdXBJZDoyIiwiY291bnQiOjEwfQoxZTgyOGVjNTZhZjk2OTFiMGQyMDYwYTBiNDE3NWM5YzMzNDQ4YTVjMWI4ZTc2OTllZjFhYTg3NmEwMjQzY2Vi",
+ "data": [
+  {
+   "user": {
+    "hasVerifiedBadge": false,
+    "userId": 2761213,
+    "username": "thhp",
+    "displayName": "4399"
+   },
+   "role": {
+    "id": 209,
+    "name": "Cheezburgers",
+    "rank": 1,
+    "color": 0
+   }
+  },
+  {
+   "user": {
+    "hasVerifiedBadge": false,
+    "userId": 499222601,
+    "username": "N1ck7180",
+    "displayName": "DischargedQueso"
+   },
+   "role": {
+    "id": 209,
+    "name": "Cheezburgers",
+    "rank": 1,
+    "color": 0
+   }
+  },
+  {
+   "user": {
+    "hasVerifiedBadge": false,
+    "userId": 130285975,
+    "username": "orelinhagostosa",
+    "displayName": "OreFilms"
+   },
+   "role": {
+    "id": 209,
+    "name": "Cheezburgers",
+    "rank": 1,
+    "color": 0
+   }
+  },
+  {
+   "user": {
+    "username": "NoId"
+   },
+   "role": {
+    "name": "x",
+    "rank": 1
+   }
+  }
+ ]
+}

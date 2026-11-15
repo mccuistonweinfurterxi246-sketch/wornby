@@ -7,6 +7,8 @@ import { Toaster } from './components/ui/sonner';
 import { AudioHaptics } from './components/AudioHaptics';
 import { usePlayerHistory } from './hooks/usePlayerHistory';
 import { ViewedGroupsDrawer } from './components/ViewedGroupsDrawer';
+import { nextTrail, readTrail, writeTrail } from './lib/exploreTrail';
+import { toast } from 'sonner';
 
 const DEFAULT_TITLE = document.title;
 
@@ -62,10 +64,14 @@ export const App: React.FC = () => {
       // an open-store link belongs to the previous player (the tab carries over, like the view does)
       if (historyMode === 'push' && url.searchParams.get('u')?.toLowerCase() !== data.user.name.toLowerCase()) {
         url.searchParams.delete('store');
+        url.searchParams.delete('gtab');
       }
       url.searchParams.set('u', data.user.name);
+      // Back/forward entries already carry their trail; new ones extend the trail they came from.
+      const trail = historyMode === 'none' ? null : nextTrail(readTrail(), { kind: 'user', id: data.user.id, name: data.user.displayName, imageUrl: data.thumbnails.headshotUrl });
       if (historyMode === 'push') window.history.pushState({}, '', url.toString());
-      else if (historyMode === 'replace') window.history.replaceState({}, '', url.toString());
+      else if (historyMode === 'replace') window.history.replaceState(window.history.state, '', url.toString());
+      if (trail) writeTrail(trail);
     } catch (err: unknown) {
       if ((err as { name?: string })?.name === 'AbortError' || (err as { code?: string })?.code === 'ERR_CANCELED') return;
       if (seq !== searchSeqRef.current) return;
@@ -79,6 +85,8 @@ export const App: React.FC = () => {
       // sanitize
       const msg = typeof rawMsg === 'string' ? rawMsg.slice(0,300) : JSON.stringify(rawMsg).slice(0,300);
       setErrorMessage(msg);
+      // The start page shows errorMessage; over a profile (e.g. a member hop) say it in a toast.
+      if (profileRef.current) toast.error(msg);
       AudioHaptics.playErrorPulse();
     } finally {
       if (seq === searchSeqRef.current) { loadingQueryRef.current = null; setIsLoading(false); setStreamingValuation(null); }
@@ -95,8 +103,9 @@ export const App: React.FC = () => {
     setProfileData(null);
     setErrorMessage(null);
     const url = new URL(window.location.href);
-    ['u', 'tab', 'store'].forEach((key) => url.searchParams.delete(key));
+    ['u', 'tab', 'store', 'gtab'].forEach((key) => url.searchParams.delete(key));
     window.history.pushState({}, '', url.toString());
+    writeTrail([]);
   }, []);
 
   // Initial check for ?u=username URL param + back/forward handling

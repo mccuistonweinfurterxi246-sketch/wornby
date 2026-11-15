@@ -49,6 +49,7 @@ export const GroupCard: React.FC<GroupCardProps> = ({
 
   return (
     <motion.div
+      data-group-card={group.id}
       layout={!prefersReduced ? 'position' : false}
       layoutId={!prefersReduced ? `group-${group.id}` : undefined}
       initial={{ opacity: 0, y: 12, scale: 0.98 }}

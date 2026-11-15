@@ -1,5 +1,6 @@
 import axios from 'axios';
-import { RobloxUserProfileFull, RobloxAssetItem, RobloxSavedOutfit, RobloxSavedOutfitDetails } from '../types/roblox';
+import { RobloxUserProfileFull, RobloxAssetItem, RobloxSavedOutfit, RobloxSavedOutfitAsset, RobloxSavedOutfitDetails, GroupMember, StoreSection, StoreSummary, Experience, CreatorAsset, CreatorAssetType, Creator } from '../types/roblox';
+import type { SnapshotContent, SnapshotRef } from '../lib/outfitArchive';
 
 export const API_BASE = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') || '/api';
 
@@ -30,6 +31,29 @@ export interface RobloxUserSearchResult {
 export class RobloxApiClient {
   public static async fetchSavedOutfitDetails(outfitId: number, signal?: AbortSignal): Promise<RobloxSavedOutfitDetails> {
     const response = await axios.get<RobloxSavedOutfitDetails>(`${API_BASE}/outfits/${outfitId}`, { timeout: 30000, signal });
+    return response.data;
+  }
+
+  /** Every outfit the player lists now, or none when their inventory is private. */
+  public static async fetchArchiveLive(userId: number, signal?: AbortSignal): Promise<{ inventory: 'public' | 'private' | 'unknown'; outfits: RobloxSavedOutfit[]; complete: boolean }> {
+    const response = await axios.get(`${API_BASE}/users/${userId}/archive`, { timeout: 60000, signal });
+    return response.data;
+  }
+
+  /** Wayback snapshots of one kind of the player's data (outfit lists take up to a minute to search). */
+  public static async fetchArchiveIndex(userId: number, kind: SnapshotRef['kind'], signal?: AbortSignal): Promise<{ snapshots: SnapshotRef[]; complete: boolean }> {
+    const response = await axios.get(`${API_BASE}/users/${userId}/archive/index`, { params: { kind }, timeout: 130000, signal });
+    return response.data;
+  }
+
+  public static async fetchArchiveSnapshot(userId: number, ref: SnapshotRef, signal?: AbortSignal): Promise<SnapshotContent> {
+    const response = await axios.get(`${API_BASE}/archive/snapshot`, { params: { user: userId, kind: ref.kind, ts: ref.ts, url: ref.url }, timeout: 45000, signal });
+    return response.data;
+  }
+
+  /** Contents of a deleted outfit from an archived capture; `assets` is null when none was archived. */
+  public static async fetchArchivedOutfit(outfitId: number, signal?: AbortSignal): Promise<{ id: number; name?: string; assets: RobloxSavedOutfitAsset[] | null }> {
+    const response = await axios.get(`${API_BASE}/outfits/${outfitId}/archived`, { timeout: 60000, signal });
     return response.data;
   }
 
@@ -173,7 +197,8 @@ export class RobloxApiClient {
     sortType: 'RecentlyCreated' | 'PriceAsc' | 'PriceDesc' | 'Relevance' = 'RecentlyCreated',
     sortOrder: 'Asc' | 'Desc' = 'Desc',
     signal?: AbortSignal,
-    fast = false
+    fast = false,
+    section?: StoreSection
   ): Promise<{ items: RobloxAssetItem[]; nextPageCursor: string | null }> {
     const response = await axios.get<{ items: RobloxAssetItem[]; nextPageCursor: string | null }>(
       `${API_BASE}/group/${groupId}/store`,
@@ -184,6 +209,7 @@ export class RobloxApiClient {
           sortType,
           sortOrder,
           fast: fast ? 1 : undefined,
+          section,
         },
         timeout: 15000,
         signal,
@@ -200,6 +226,40 @@ export class RobloxApiClient {
       { timeout: 15000, signal }
     );
     return response.data.thumbnails || {};
+  }
+
+  public static async fetchGroupStoreSummary(groupId: number, signal?: AbortSignal): Promise<StoreSummary> {
+    const response = await axios.get<StoreSummary>(`${API_BASE}/group/${groupId}/store-summary`, { timeout: 15000, signal });
+    return response.data;
+  }
+
+  public static async fetchAssetsSummary(c: Creator, signal?: AbortSignal): Promise<Record<CreatorAssetType, number>> {
+    const base = c.kind === 'user' ? `users/${c.id}` : `group/${c.id}`;
+    const response = await axios.get(`${API_BASE}/${base}/assets-summary`, { timeout: 15000, signal });
+    return response.data;
+  }
+
+  /** Catalog items the player created (same shape as a group store page). */
+  public static async fetchUserCreations(userId: number, cursor = '', signal?: AbortSignal): Promise<{ items: RobloxAssetItem[]; nextPageCursor: string | null }> {
+    const response = await axios.get(`${API_BASE}/users/${userId}/creations`, { params: { cursor: cursor || undefined, limit: 30 }, timeout: 15000, signal });
+    return response.data;
+  }
+
+  public static async fetchGroupMembers(groupId: number, cursor = '', signal?: AbortSignal): Promise<{ members: GroupMember[]; nextPageCursor: string | null; hidden?: boolean; owner?: { id: number; name: string; displayName: string } | null }> {
+    const response = await axios.get(`${API_BASE}/group/${groupId}/members`, { params: { cursor: cursor || undefined }, timeout: 15000, signal });
+    return response.data;
+  }
+
+  public static async fetchExperiences(c: Creator, cursor = '', signal?: AbortSignal): Promise<{ experiences: Experience[]; nextPageCursor: string | null }> {
+    const base = c.kind === 'user' ? `users/${c.id}` : `group/${c.id}`;
+    const response = await axios.get(`${API_BASE}/${base}/experiences`, { params: { cursor: cursor || undefined }, timeout: 15000, signal });
+    return response.data;
+  }
+
+  public static async fetchCreatorAssets(c: Creator, type: CreatorAssetType, cursor = '', signal?: AbortSignal): Promise<{ assets: CreatorAsset[]; nextPageCursor: string | null }> {
+    const base = c.kind === 'user' ? `users/${c.id}` : `group/${c.id}`;
+    const response = await axios.get(`${API_BASE}/${base}/assets`, { params: { type, cursor: cursor || undefined }, timeout: 15000, signal });
+    return response.data;
   }
 
   public static async fetchGroupStoreStatus(groupId: number, signal?: AbortSignal): Promise<{ hasItems: boolean }> {

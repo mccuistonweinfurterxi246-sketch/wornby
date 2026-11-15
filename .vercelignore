@@ -1,0 +1,10 @@
+target/
+dist/
+test-results/
+.env
+.env.*
+!.env.example
+.tools/
+graphify-out/
+.superpowers/
+docs/superpowers/

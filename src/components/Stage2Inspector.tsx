@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { RobloxUserProfileFull, RobloxGroupMembership } from '../types/roblox';
 import { AssetCard } from './AssetCard';
@@ -29,6 +29,7 @@ import {
   RotateCcw,
   Heart,
   Shirt,
+  Hammer,
 } from 'lucide-react';
 import { useCopiedGroupsFolder } from '../hooks/useCopiedGroupsFolder';
 import { CopiedGroupsFolder } from './CopiedGroupsFolder';
@@ -36,9 +37,13 @@ import { useFavorites } from '../hooks/useFavorites';
 import { FavoritesDrawer, GroupStoreModal, useMountedOnce } from './lazyPanels';
 import { setUrlParam } from '../lib/urlParams';
 import { useStoreLink } from '../hooks/useStoreLink';
+import { ExploreTrail } from './explore/ExploreTrail';
+import { PlayerCreations } from './explore/PlayerCreations';
+import type { TrailEntry } from '../lib/exploreTrail';
+import { readStoreParam } from '../lib/urlParams';
 import { PlayerSearch } from './PlayerSearch';
 
-const SavedOutfitsGallery = React.lazy(() => import('./SavedOutfitsGallery').then((module) => ({ default: module.SavedOutfitsGallery })));
+const OutfitArchive = React.lazy(() => import('./OutfitArchive').then((module) => ({ default: module.OutfitArchive })));
 
 interface Stage2InspectorProps {
   data: RobloxUserProfileFull;
@@ -48,8 +53,8 @@ interface Stage2InspectorProps {
 }
 
 type GroupSortOption = 'default' | 'members_desc' | 'members_asc' | 'rank_desc';
-type InspectorTab = 'outfit' | 'fits' | 'groups';
-const TABS: InspectorTab[] = ['outfit', 'fits', 'groups'];
+type InspectorTab = 'outfit' | 'fits' | 'creations' | 'groups';
+const TABS: InspectorTab[] = ['outfit', 'fits', 'creations', 'groups'];
 
 function readTabParam(): InspectorTab {
   const tab = new URLSearchParams(window.location.search).get('tab');
@@ -78,12 +83,28 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
   const storeMounted = useMountedOnce(!!storeModalGroup);
 
   const { user, thumbnails, outfit, groups, telemetry } = data;
+  // What the player wears now joins the archive's worn-look timeline.
+  const currentLook = useMemo(() => ({
+    items: outfit.items.map((item) => ({ id: item.id, name: item.name, assetTypeName: item.assetTypeName })),
+    renderUrl: thumbnails.fullBodyUrl,
+  }), [outfit.items, thumbnails.fullBodyUrl]);
 
   // ?store= opens, switches or closes the store on load and on browser back/forward.
   useStoreLink(storeModalGroup?.id ?? null, setStoreModalGroup, {
     canOpen: () => true,
     findGroup: (id) => groups.find((g) => g.id === id),
   });
+
+  // A hop to another player drops ?store=: close that player's store without adding a history step.
+  useEffect(() => {
+    if (readStoreParam() === null) setStoreModalGroup(null);
+  }, [user.id]);
+
+  const handleTrailNavigate = useCallback((entry: TrailEntry) => {
+    if (entry.kind === 'group') { setStoreModalGroup({ id: entry.id, name: entry.name, iconUrl: entry.imageUrl ?? null }); return; }
+    if (entry.id === user.id) setStoreModalGroup(null);
+    else onNewSearch(String(entry.id));
+  }, [onNewSearch, user.id]);
 
   // Tabs are back/forward steps: switching pushes ?tab=, back/forward restores the tab from the URL.
   useEffect(() => {
@@ -245,6 +266,7 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
       </div>
 
       <main className="relative min-h-screen w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 pb-24 md:py-12 md:pb-28 flex flex-col gap-8">
+        <ExploreTrail onNavigate={handleTrailNavigate} className="-mb-5" />
         {/* Top Floating Control Bar */}
       <header className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -519,7 +541,11 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
             </TabsTrigger>
             <TabsTrigger value="fits" className="flex items-center gap-2">
               <Shirt className="w-3.5 h-3.5" />
-              <span>FITS</span>
+              <span>ARCHIVE</span>
+            </TabsTrigger>
+            <TabsTrigger value="creations" className="flex items-center gap-2">
+              <Hammer className="w-3.5 h-3.5" />
+              <span>CREATIONS</span>
             </TabsTrigger>
             <TabsTrigger value="groups" className="flex items-center gap-2">
               <Users className="w-3.5 h-3.5" />
@@ -559,9 +585,13 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
           </section>
         </TabsContent>
 
+        <TabsContent value="creations">
+          <PlayerCreations user={user} groups={groups} onOpenGroup={(g) => setStoreModalGroup(g)} />
+        </TabsContent>
+
         <TabsContent value="fits">
-          <React.Suspense fallback={<p role="status" className="py-12 text-center text-sm text-white/55">Loading fits…</p>}>
-            <SavedOutfitsGallery key={user.id} userId={user.id} />
+          <React.Suspense fallback={<p role="status" className="py-12 text-center text-sm text-white/55">Loading archive…</p>}>
+            <OutfitArchive key={user.id} userId={user.id} currentLook={currentLook} />
           </React.Suspense>
         </TabsContent>
 
@@ -735,7 +765,10 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
       savedGroups={folder.entries}
       onSaveGroup={handleSaveGroup}
       onRemoveSavedGroup={handleRemoveSavedGroup}
+      onOpenPlayer={(m) => onNewSearch(String(m.id))}
+      onTrailNavigate={handleTrailNavigate}
     /></React.Suspense>}
+
 
     {/* Favorites & Wishlist Drawer */}
     {favoritesMounted && <React.Suspense fallback={null}><FavoritesDrawer

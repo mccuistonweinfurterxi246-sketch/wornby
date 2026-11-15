@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { RobloxAssetItem, RobloxGroupMembership } from '../types/roblox';
-import { analyzeGroupItems, GroupStoreCategory, GroupStoreTag } from '../lib/groupStoreAnalysis';
+import { RobloxGroupMembership, StoreSummary } from '../types/roblox';
+import { GroupStoreCategory, GroupStoreTag } from '../lib/groupStoreAnalysis';
 
 const STORAGE_KEY = 'wornby_viewed_group_stores_v1';
 const EVENT_KEY = 'wornby_viewed_group_stores_updated';
-const ANALYSIS_VERSION = 2;
+// 3: counts come from the server's per-section summary (earlier entries mixed in unclassified bundles).
+export const ANALYSIS_VERSION = 3;
 
 export type ViewedGroupCategory = GroupStoreCategory;
 export type ViewableGroup = Pick<RobloxGroupMembership, 'id' | 'name'> & Partial<RobloxGroupMembership>;
@@ -86,15 +87,21 @@ export function useViewedGroups() {
     writeViewedGroups([next, ...entries.filter((entry) => entry.id !== group.id)]);
   }, []);
 
-  const updateCatalogSummary = useCallback((groupId: number, items: RobloxAssetItem[], complete: boolean) => {
+  /** Store counts from the server summary: clothing vs everything else, exact per section. */
+  const recordStoreSummary = useCallback((groupId: number, summary: StoreSummary) => {
     const entries = readViewedGroups();
-    const previous = entries.find((entry) => entry.id === groupId);
-    if (!previous) return;
-    const analysis = analyzeGroupItems(items, complete);
+    if (!entries.some((entry) => entry.id === groupId)) return;
+    const clothingCount = summary.clothing.count;
+    const itemCount = summary.accessories.count + summary.heads.count + summary.animations.count;
+    const complete = !Object.values(summary).some((s) => s.more);
+    const tags = ([['Clothing', summary.clothing.count], ['Accessories', summary.accessories.count], ['Heads & faces', summary.heads.count], ['Animations', summary.animations.count]] as const)
+      .filter(([, count]) => count > 0).map(([label, count]) => ({ label, count }));
+    const category: ViewedGroupCategory = clothingCount > 0 && itemCount > 0 ? 'mixed' : clothingCount > 0 ? 'clothing' : itemCount > 0 ? 'items' : 'empty';
     writeViewedGroups(entries.map((entry) => entry.id === groupId ? {
-      ...entry, checkedAt: Date.now(), ...analysis, analysisVersion: ANALYSIS_VERSION,
+      ...entry, checkedAt: Date.now(), category, clothingCount, itemCount, unknownCount: 0,
+      totalCount: clothingCount + itemCount, complete, tags, analysisVersion: ANALYSIS_VERSION,
     } : entry));
   }, []);
 
-  return { viewedGroups, recordViewedGroup, updateCatalogSummary };
+  return { viewedGroups, recordViewedGroup, recordStoreSummary };
 }

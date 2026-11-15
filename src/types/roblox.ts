@@ -33,7 +33,12 @@ export interface RobloxAssetItem {
   thumbnailUrl: string | null;
   studioLuaCommand: string;
   catalogUrl: string;
+  /** The id that works in Roblox: the item itself, or a bundle's wearable head (null: a bundle without one). */
+  wearAssetId?: number | null;
 }
+
+/** What to copy for an item: its wearable asset id (a bundle id is not an asset id in Roblox). */
+export const copyableId = (item: Pick<RobloxAssetItem, 'id' | 'wearAssetId'>) => item.wearAssetId ?? item.id;
 
 export interface RobloxGroupMembership {
   id: number;
@@ -44,6 +49,44 @@ export interface RobloxGroupMembership {
   roleRank: number;
   iconUrl: string | null;
 }
+
+export interface GroupMember {
+  id: number;
+  name: string;
+  displayName: string;
+  verified: boolean;
+  role: { name: string; rank: number };
+  headshotUrl: string | null;
+}
+
+export interface Experience {
+  universeId: number;
+  placeId: number;
+  name: string;
+  description: string | null;
+  moderated: boolean;
+  visits: number;
+  created: string | null;
+  updated: string | null;
+  iconUrl: string | null;
+}
+
+export type CreatorAssetType = 'model' | 'decal' | 'mesh';
+
+export interface CreatorAsset {
+  id: number;
+  name: string;
+  typeId: number;
+  created: string;
+  updated: string;
+  thumbnailUrl: string | null;
+}
+
+export type Creator = { kind: 'user' | 'group'; id: number };
+
+export type StoreSection = 'clothing' | 'accessories' | 'heads' | 'animations';
+/** Exact item counts per store section (`more`: counting stopped at the cap). */
+export type StoreSummary = Record<StoreSection, { count: number; more: boolean }>;
 
 export interface RobloxSavedOutfit {
   id: number;

@@ -1,0 +1,32 @@
+[package]
+name = "wornby-api"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "rust/lib.rs"
+
+# Vercel Function serving every /api route (see vercel.json rewrites)
+[[bin]]
+name = "main"
+path = "api/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+vercel_runtime = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] } # keep Node's field order in responses
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "brotli"] }
+futures = "0.3"
+http-body-util = "0.1"
+http-body = "1"
+bytes = "1"
+tokio-stream = "0.1"
+percent-encoding = "2"
+url = "2"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
