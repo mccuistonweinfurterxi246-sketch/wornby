@@ -18,13 +18,13 @@ interface GroupCardProps {
   onOpenStore?: (group: RobloxGroupMembership) => void;
 }
 
-export const GroupCard: React.FC<GroupCardProps> = ({
+export const GroupCard = React.memo(function GroupCard({
   group,
   index,
   isSaved,
   onSaveGroup,
   onOpenStore,
-}) => {
+}: GroupCardProps) {
   const [savedRecently, setSavedRecently] = useState(false);
 
   const handleSaveGroup = () => {
@@ -39,8 +39,6 @@ export const GroupCard: React.FC<GroupCardProps> = ({
   const saved = savedRecently || isSaved;
   // Уникальная волна: диагональ + синус, 60fps, не режет глаза (высокий damping, без отскока)
   const prefersReduced = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  const shouldFloat = !prefersReduced;
-  const floatClass = !shouldFloat ? '' : (index % 2 === 0 ? 'animate-float-slow' : 'animate-float-delayed');
   const col = index % 4;
   const row = Math.floor(index / 4);
   // математика волны: col*0.012 + row*0.018 = диагональная волна, sin = органический изгиб
@@ -69,7 +67,7 @@ export const GroupCard: React.FC<GroupCardProps> = ({
       className="h-full relative will-change-transform"
       style={{ transform: 'translateZ(0)' }}
     >
-      <div className={`${floatClass} h-full will-change-transform`} style={{ contain: 'layout paint' }}>
+      <div className="h-full" style={{ contain: 'layout paint' }}>
         <TiltCard maxTilt={5} scale={1.012} className="h-full">
           <Card className="h-full flex flex-col group border-none bg-transparent shadow-none">
           <CardContent className="p-4 flex-1 flex flex-col justify-between min-h-[135px] h-full space-y-3 bg-black/40 backdrop-blur-md group-hover:bg-black/60 border border-white/5 group-hover:border-white/20 rounded-2xl transition-all duration-300 shadow-inner">
@@ -175,4 +173,4 @@ export const GroupCard: React.FC<GroupCardProps> = ({
       </div>
     </motion.div>
   );
-};
+});

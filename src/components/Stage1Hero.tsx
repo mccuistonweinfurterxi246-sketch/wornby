@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Heart, UserRound } from 'lucide-react';
-import Balatro from './ui/Balatro';
 import { useFavorites } from '../hooks/useFavorites';
 import { usePlayerHistory } from '../hooks/usePlayerHistory';
 import { PlayerSearch } from './PlayerSearch';
 import { FavoritesDrawer, GroupStoreModal, useMountedOnce } from './lazyPanels';
 import { useStoreLink } from '../hooks/useStoreLink';
+import { AppBackground } from './AppBackground';
 
 interface Stage1HeroProps {
   onSearch: (query: string) => void;
@@ -47,19 +47,9 @@ export const Stage1Hero: React.FC<Stage1HeroProps> = ({ onSearch, isLoading, err
           )}
         </button>
       </div>
-      {/* Balatro Background */}
+      {/* ASCII background; frozen while a full-screen panel (blurred backdrop) covers it */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden" aria-hidden="true">
-        <Balatro
-          spinRotation={-4}
-          spinSpeed={20}
-          color1="#ffffff"
-          color2="#7f8182"
-          color3="#000000"
-          contrast={5.5}
-          lighting={0.5}
-          spinAmount={0.15}
-          pixelFilter={800}
-        />
+        <AppBackground paused={isFavoritesOpen || !!storeModalGroup} />
         {/* Vignette Overlay */}
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_0%,rgba(0,0,0,0.6)_100%)]" />
       </div>

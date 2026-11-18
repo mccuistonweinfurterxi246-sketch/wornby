@@ -13,7 +13,7 @@ interface AssetCardProps {
   index: number;
 }
 
-export const AssetCard: React.FC<AssetCardProps> = ({ item, index }) => {
+export const AssetCard = React.memo(function AssetCard({ item, index }: AssetCardProps) {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
   const { isFavorite, toggleFavorite } = useFavorites();
@@ -122,7 +122,7 @@ export const AssetCard: React.FC<AssetCardProps> = ({ item, index }) => {
 
               {/* Moderated fallback watermark */}
               {item.isDeletedOrModerated && (
-                <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-black/80 backdrop-blur-md border border-red-500/40 text-[9px] font-mono text-red-400">
+                <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-black/80 border border-red-500/40 text-[9px] font-mono text-red-400">
                   ARCHIVED
                 </div>
               )}
@@ -158,4 +158,4 @@ export const AssetCard: React.FC<AssetCardProps> = ({ item, index }) => {
       </div>
     </motion.div>
   );
-};
+});

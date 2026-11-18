@@ -46,13 +46,17 @@ export const OutfitArchive: React.FC<{ userId: number; currentLook: { items: Arc
 
   // Item images for the look cards on screen (looks rarely have an archived render).
   useEffect(() => {
-    const ids = [...new Set(looksShown.flatMap(([, looks]) => looks.filter((l) => !l.renderUrl).flatMap((l) => l.assetIds.slice(0, 4))))]
-      .filter((id) => !requestedThumbs.current.has(id)).slice(0, 120);
-    if (ids.length === 0) return;
-    // Asked once per id: items without an image are not requested again.
-    ids.forEach((id) => requestedThumbs.current.add(id));
-    RobloxApiClient.fetchAssetThumbnails(ids).then((t) => setLookThumbs((m) => ({ ...m, ...t })))
-      .catch(() => ids.forEach((id) => requestedThumbs.current.delete(id)));
+    // Snapshots stream in one by one; wait for a quiet moment so their images go in one request, not one each.
+    const timer = window.setTimeout(() => {
+      const ids = [...new Set(looksShown.flatMap(([, looks]) => looks.filter((l) => !l.renderUrl).flatMap((l) => l.assetIds.slice(0, 4))))]
+        .filter((id) => !requestedThumbs.current.has(id)).slice(0, 120);
+      if (ids.length === 0) return;
+      // Asked once per id: items without an image are not requested again.
+      ids.forEach((id) => requestedThumbs.current.add(id));
+      RobloxApiClient.fetchAssetThumbnails(ids).then((t) => setLookThumbs((m) => ({ ...m, ...t })))
+        .catch(() => ids.forEach((id) => requestedThumbs.current.delete(id)));
+    }, 250);
+    return () => window.clearTimeout(timer);
   }, [looksShown]);
 
   const withThumbs = useCallback(async (items: ArchiveItem[]) => {

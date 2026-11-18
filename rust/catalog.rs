@@ -124,6 +124,8 @@ pub struct Parsed {
     pub is_bundle: bool,
     /// For a bundle: its one wearable Dynamic Head asset (the id that works in Roblox), if it has one.
     pub bundle_head: Option<u64>,
+    /// Roblox bundle type (1 body, 2 animations, 3 shoes, 4 dynamic head) so clients can sort bundles by kind.
+    pub bundle_type: Option<i64>,
 }
 
 impl Parsed {
@@ -148,6 +150,7 @@ impl Parsed {
             item_restrictions: json!([]),
             is_bundle: false,
             bundle_head: None,
+            bundle_type: None,
         }
     }
 }
@@ -230,6 +233,7 @@ pub fn parse_catalog_item(item: &Value, item_type: u8) -> Parsed {
         },
         is_bundle: item_type == 2,
         bundle_head: bundle_head(item),
+        bundle_type: if item_type == 2 { item["bundleType"].as_i64() } else { None },
     }
 }
 
@@ -399,6 +403,9 @@ pub fn store_item(
     if let Some(t) = asset_type {
         item.insert("assetType".into(), json!(t));
     }
+    if let Some(t) = d.and_then(|d| d.bundle_type) {
+        item.insert("bundleType".into(), json!(t));
+    }
     item.insert("assetTypeName".into(), json!(type_name));
     item.insert(
         "itemRestrictions".into(),
@@ -529,10 +536,11 @@ pub enum Section {
     Clothing,
     Accessories,
     Heads,
+    Hair,
     Animations,
 }
 
-pub const SECTIONS: [Section; 4] = [Section::Clothing, Section::Accessories, Section::Heads, Section::Animations];
+pub const SECTIONS: [Section; 5] = [Section::Clothing, Section::Accessories, Section::Heads, Section::Hair, Section::Animations];
 
 impl Section {
     pub fn parse(s: &str) -> Option<Self> {
@@ -540,6 +548,7 @@ impl Section {
             "clothing" => Self::Clothing,
             "accessories" => Self::Accessories,
             "heads" => Self::Heads,
+            "hair" => Self::Hair,
             "animations" => Self::Animations,
             _ => None?,
         })
@@ -549,15 +558,18 @@ impl Section {
             Self::Clothing => "clothing",
             Self::Accessories => "accessories",
             Self::Heads => "heads",
+            Self::Hair => "hair",
             Self::Animations => "animations",
         }
     }
-    /// Roblox catalog category id (names are unreliable: an unknown one silently means "All").
+    /// Roblox catalog category id, `category/subcategory` when narrowed (names are unreliable: an unknown
+    /// one silently means "All"). Hair lives only in 18 ("Head & Body"); its subcategory 20 is hair alone.
     pub fn category(&self) -> &'static str {
         match self {
             Self::Clothing => "3",
             Self::Accessories => "11",
             Self::Heads => "18",
+            Self::Hair => "18/20",
             Self::Animations => "12",
         }
     }
@@ -573,6 +585,8 @@ impl Section {
             // Counted from bundle types alone, so the section is exactly its Dynamic Head bundles.
             (Self::Heads, false) => false,
             (Self::Heads, true) => t == 4,
+            (Self::Hair, false) => t == 41,
+            (Self::Hair, true) => false,
             (Self::Animations, false) => matches!(t, 48..=56 | 61 | 78),
             (Self::Animations, true) => t == 2,
             (Self::Accessories, true) => false,
@@ -594,13 +608,20 @@ fn search_url(
         url::Url::parse(&format!("https://catalog.roproxy.com/v1/search/{path}")).unwrap();
     {
         let mut qp = url.query_pairs_mut();
-        qp.append_pair("category", category)
-            .append_pair("creatorTargetId", &creator.id().to_string())
+        let (category, subcategory) = category.split_once('/').map_or((category, None), |(c, s)| (c, Some(s)));
+        qp.append_pair("category", category);
+        if let Some(sub) = subcategory {
+            qp.append_pair("subcategory", sub);
+        }
+        qp.append_pair("creatorTargetId", &creator.id().to_string())
             .append_pair("creatorType", creator.type_code())
             .append_pair("limit", &limit.to_string());
         if !cursor.is_empty() {
             qp.append_pair("cursor", cursor);
         }
+        // Roblox has no "RecentlyCreated" sort (an unknown name silently means Relevance); its
+        // "Recently Published" order, type 3, is the newest releases first.
+        let sort_type = if sort_type == "RecentlyCreated" { "3" } else { sort_type };
         qp.append_pair("sortType", sort_type)
             .append_pair("sortOrder", sort_order)
             .append_pair("includeNotForSale", "true");
@@ -881,21 +902,22 @@ async fn section_count(c: Creator, s: Section) -> Result<(u64, bool), UpErr> {
     Ok((count, more))
 }
 
-/// Item counts per store section: `{ clothing: { count, more }, accessories, heads, animations }`.
+/// Item counts per store section: `{ clothing: { count, more }, accessories, heads, hair, animations }`.
 pub async fn store_summary(group_id: u64) -> Result<Value, UpErr> {
     let key = group_id.to_string();
     if let Some(hit) = STORE_SUMMARY.get(&key) {
         return Ok(hit);
     }
     let c = Creator::Group(group_id);
-    let (clothing, accessories, heads, animations) = tokio::join!(
+    let (clothing, accessories, heads, hair, animations) = tokio::join!(
         section_count(c, Section::Clothing),
         section_count(c, Section::Accessories),
         section_count(c, Section::Heads),
+        section_count(c, Section::Hair),
         section_count(c, Section::Animations),
     );
     let mut out = Map::new();
-    for (s, result) in SECTIONS.iter().zip([clothing, accessories, heads, animations]) {
+    for (s, result) in SECTIONS.iter().zip([clothing, accessories, heads, hair, animations]) {
         let (count, more) = result?;
         out.insert(s.key().into(), json!({ "count": count, "more": more }));
     }
@@ -1011,6 +1033,15 @@ mod tests {
     }
 
     #[test]
+    fn bundles_carry_their_type() {
+        let shoes = json!({ "id": 9, "itemType": "Bundle", "bundleType": 3, "name": "Kicks", "price": 50 });
+        let item = store_item(9, Some(&parse_catalog_item(&shoes, 2)), "G", Creator::Group(1), None);
+        assert_eq!(item["bundleType"], 3);
+        let hat = json!({ "id": 7, "itemType": "Asset", "assetType": 8, "name": "Hat", "price": 10 });
+        assert!(store_item(7, Some(&parse_catalog_item(&hat, 1)), "G", Creator::Group(1), None).get("bundleType").is_none());
+    }
+
+    #[test]
     fn user_items_say_user() {
         let item = store_item(6, None, "User #5", Creator::User(5), None);
         assert_eq!((item["creatorType"].clone(), item["creatorId"].clone()), (json!("User"), json!(5)));
@@ -1020,14 +1051,21 @@ mod tests {
 
     #[test]
     fn sections_query_their_own_catalog_category() {
-        let codes: Vec<_> = ["clothing", "accessories", "heads", "animations"]
+        let codes: Vec<_> = ["clothing", "accessories", "heads", "hair", "animations"]
             .iter()
             .map(|s| Section::parse(s).map(|s| s.category()))
             .collect();
-        assert_eq!(codes, vec![Some("3"), Some("11"), Some("18"), Some("12")]);
+        assert_eq!(codes, vec![Some("3"), Some("11"), Some("18"), Some("18/20"), Some("12")]);
         assert!(Section::parse("bogus").is_none());
         let u = search_url("items", Creator::Group(7), 10, "", "RecentlyCreated", "Desc", "11");
         assert!(u.as_str().contains("category=11&"), "{u}");
+        assert!(!u.as_str().contains("subcategory"), "{u}");
+        assert!(u.as_str().contains("sortType=3&"), "newest first is Roblox sort 3: {u}");
+        let p = search_url("items", Creator::Group(7), 10, "", "PriceAsc", "Asc", "11");
+        assert!(p.as_str().contains("sortType=PriceAsc&"), "{p}");
+        // Hair is only reachable as Head & Body (18) narrowed to subcategory 20.
+        let h = search_url("items", Creator::Group(7), 10, "", "RecentlyCreated", "Desc", Section::Hair.category());
+        assert!(h.as_str().contains("category=18&subcategory=20&"), "{h}");
     }
 
     // Category 18 also returns body bundles and hair for some creators: every row is checked.
@@ -1041,6 +1079,7 @@ mod tests {
         assert!(Section::Heads.accepts(&bundle(4)));
         assert!(!Section::Heads.accepts(&bundle(1)) && !Section::Heads.accepts(&asset(41)) && !Section::Heads.accepts(&asset(79)));
         assert!(Section::Animations.accepts(&asset(61)) && Section::Animations.accepts(&bundle(2)));
+        assert!(Section::Hair.accepts(&asset(41)) && !Section::Hair.accepts(&bundle(4)) && !Section::Hair.accepts(&asset(8)));
         // Id-only fallback rows carry no type: they came from the category search itself.
         assert!(Section::Heads.accepts(&json!({ "id": 1, "itemType": "Asset" })));
     }

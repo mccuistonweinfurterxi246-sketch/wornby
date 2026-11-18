@@ -1,4 +1,4 @@
-import React, { useRef, useCallback } from 'react';
+import React, { useRef, useCallback, useEffect } from 'react';
 
 interface TiltCardProps {
   children: React.ReactNode;
@@ -20,6 +20,10 @@ export const TiltCard: React.FC<TiltCardProps> = ({
   const rafRef = useRef<number | null>(null);
   const pendingRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const isHoveringRef = useRef(false);
+  // Measured once per hover: getBoundingClientRect on every mousemove forced a layout each time.
+  const rectRef = useRef<DOMRect | null>(null);
+  // any scroll (page or a scroll box) moves the card under the pointer: measure again on the next move
+  const forgetRect = useCallback(() => { rectRef.current = null; }, []);
 
   const prefersReduced = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
@@ -51,15 +55,21 @@ export const TiltCard: React.FC<TiltCardProps> = ({
       const el = cardRef.current;
       if (!el) return;
       isHoveringRef.current = true;
-      const rect = el.getBoundingClientRect();
+      if (!rectRef.current) {
+        rectRef.current = el.getBoundingClientRect();
+        window.addEventListener('scroll', forgetRect, { capture: true, passive: true });
+      }
+      const rect = rectRef.current;
       pendingRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top, w: rect.width, h: rect.height };
       if (rafRef.current == null) rafRef.current = requestAnimationFrame(applyTilt);
     },
-    [applyTilt, prefersReduced]
+    [applyTilt, prefersReduced, forgetRect]
   );
 
   const handleMouseLeave = useCallback(() => {
     isHoveringRef.current = false;
+    rectRef.current = null;
+    window.removeEventListener('scroll', forgetRect, { capture: true });
     if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
     const el = cardRef.current;
     const glareEl = glareRef.current;
@@ -68,7 +78,8 @@ export const TiltCard: React.FC<TiltCardProps> = ({
       el.style.transition = 'transform 0.7s cubic-bezier(0.22, 1, 0.36, 1)';
     }
     if (glareEl) glareEl.style.opacity = '0';
-  }, []);
+  }, [forgetRect]);
+  useEffect(() => () => window.removeEventListener('scroll', forgetRect, { capture: true }), [forgetRect]);
 
   return (
     <div

@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { RobloxUserProfileFull } from './types/roblox';
 import { RobloxApiClient } from './services/api';
 import { Stage1Hero } from './components/Stage1Hero';
-import { NoiseOverlay } from './components/NoiseOverlay';
 import { Toaster } from './components/ui/sonner';
 import { AudioHaptics } from './components/AudioHaptics';
 import { usePlayerHistory } from './hooks/usePlayerHistory';
@@ -153,9 +152,6 @@ export const App: React.FC = () => {
 
   return (
     <div className="relative min-h-screen font-sans">
-      {/* Global Grain Noise Texture */}
-      <NoiseOverlay />
-
       {/* Loading overlay when profile exists but new search in flight — shows streaming valuation */}
       {isLoading && (
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 pointer-events-none" aria-live="polite" aria-busy="true">

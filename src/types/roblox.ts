@@ -19,6 +19,8 @@ export interface RobloxAssetItem {
   description: string;
   assetType?: number | string;
   assetTypeName?: string;
+  /** Bundles only: 1 body, 2 animations, 3 shoes, 4 dynamic head. */
+  bundleType?: number;
   creatorName: string;
   creatorId?: number;
   creatorType?: string;
@@ -84,7 +86,7 @@ export interface CreatorAsset {
 
 export type Creator = { kind: 'user' | 'group'; id: number };
 
-export type StoreSection = 'clothing' | 'accessories' | 'heads' | 'animations';
+export type StoreSection = 'clothing' | 'accessories' | 'heads' | 'hair' | 'animations';
 /** Exact item counts per store section (`more`: counting stopped at the cap). */
 export type StoreSummary = Record<StoreSection, { count: number; more: boolean }>;
 

@@ -13,6 +13,7 @@ import { useFavorites } from '../hooks/useFavorites';
 import { useClipboard } from '../hooks/useClipboard';
 import { useViewedGroups, ViewedGroupCategory } from '../hooks/useViewedGroups';
 import { GroupAnalysisSummary } from './GroupAnalysisSummary';
+import { SECTION_KINDS, itemKindKey } from '../lib/storeKinds';
 import { QuickCopyStation } from './QuickCopyStation';
 import { Tooltip, TooltipMono } from './ui/tooltip';
 import { FALLBACK_GROUP_SVG } from '../lib/fallbacks';
@@ -56,7 +57,7 @@ interface GroupStoreModalProps {
 const GROUP_TAB_LABELS: [GroupTab, string][] = [['store', 'STORE'], ['experiences', 'EXPERIENCES'], ['members', 'MEMBERS'], ['assets', 'ASSETS']];
 
 type FilterCategory = 'all' | 'on_sale' | 'free' | 'off_sale';
-const SECTIONS: [StoreSection, string][] = [['clothing', 'CLOTHING'], ['accessories', 'ACCESSORIES'], ['heads', 'HEADS & FACES'], ['animations', 'ANIMATIONS']];
+const SECTIONS: [StoreSection, string][] = [['clothing', 'CLOTHING'], ['accessories', 'ACCESSORIES'], ['heads', 'HEADS & FACES'], ['hair', 'HAIR'], ['animations', 'ANIMATIONS']];
 type SortOption = 'RecentlyCreated' | 'PriceAsc' | 'PriceDesc';
 type PriceFilter = 'all' | 'free' | 'under100' | '100plus';
 
@@ -158,6 +159,9 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
   const [sectionPick, setSectionPick] = useState<{ group: number; key: StoreSection } | null>(null);
   const [summary, setSummary] = useState<StoreSummary | null>(null);
   const section = sectionPick && sectionPick.group === activeGroup?.id ? sectionPick.key : null;
+  // Type chip (Shirts, Jackets…); belongs to one group + section, so switching either shows everything again.
+  const [kindPick, setKindPick] = useState<{ group: number; section: StoreSection; key: string } | null>(null);
+  const kind = kindPick && kindPick.group === activeGroup?.id && kindPick.section === section ? kindPick.key : 'all';
   const [sortOption, setSortOption] = useState<SortOption>('RecentlyCreated');
   const [priceFilter, setPriceFilter] = useState<PriceFilter>('all');
   const [selectedItems, setSelectedItems] = useState<RobloxAssetItem[]>(loadStoredItems);
@@ -364,7 +368,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
       .then((counts) => {
         setSummary(counts);
         recordStoreSummary(groupId, counts);
-        setSectionPick({ group: groupId, key: saved ?? SECTIONS.find(([key]) => counts[key].count > 0)?.[0] ?? 'clothing' });
+        setSectionPick({ group: groupId, key: saved ?? SECTIONS.find(([key]) => (counts[key]?.count ?? 0) > 0)?.[0] ?? 'clothing' });
       })
       .catch(() => { if (!ac.signal.aborted) setSectionPick({ group: groupId, key: saved ?? 'clothing' }); });
     return () => ac.abort();
@@ -414,7 +418,19 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, isGroupsOpen, isSelectionOpen, onClose]);
 
-  const kindItems = items;
+  const kindCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of items) { const key = itemKindKey(section, item); counts.set(key, (counts.get(key) ?? 0) + 1); }
+    return counts;
+  }, [items, section]);
+  const kindChips = useMemo(() => {
+    const chips: [string, string, number][] = (section ? SECTION_KINDS[section] ?? [] : [])
+      .map(([key, label]): [string, string, number] => [key, label, kindCounts.get(key) ?? 0]).filter(([, , n]) => n > 0);
+    const other = kindCounts.get('other') ?? 0;
+    if (other > 0 && chips.length > 0) chips.push(['other', 'Other', other]);
+    return chips;
+  }, [kindCounts, section]);
+  const kindItems = useMemo(() => kind === 'all' ? items : items.filter((item) => itemKindKey(section, item) === kind), [items, kind, section]);
 
   const filteredItems = useMemo(() => {
     return kindItems.filter((item) => {
@@ -568,6 +584,19 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
     }),
   }), []);
 
+  // Latest handlers for the memoized sidebar rows (same pattern as the store cards).
+  const groupRowHandlersRef = useRef<{ pick: (storeGroup: StoreGroupRowGroup) => void; save: (storeGroup: StoreGroupRowGroup) => void; remove: (storeGroup: StoreGroupRowGroup) => void } | null>(null);
+  groupRowHandlersRef.current = {
+    pick: (storeGroup) => { if (!activeGroup) return; if (storeGroup.id === activeGroup.id) void fetchItems(true, ''); else { catalogAbortRef.current?.abort(); requestGenerationRef.current++; manualGroupSelectionRef.current = true; setActiveGroup(storeGroup as typeof filteredGroups[number]); } localStorage.setItem('wornby_last_store_group', String(storeGroup.id)); setIsGroupsOpen(false); },
+    save: (storeGroup) => saveGroupFromStore(storeGroup as RobloxGroupMembership),
+    remove: (storeGroup) => removeGroupFromSaved(storeGroup as RobloxGroupMembership),
+  };
+  const groupRowActions = useMemo<StoreGroupRowActions>(() => ({
+    onPick: (g) => groupRowHandlersRef.current?.pick(g),
+    onSave: (g) => groupRowHandlersRef.current?.save(g),
+    onRemove: (g) => groupRowHandlersRef.current?.remove(g),
+  }), []);
+
   const copySelected = async () => {
     const separator = copyFormat === 'comma' ? ', ' : copyFormat === 'space' ? ' ' : '\n';
     const copied = await copy(selectedItems.map(copyableId).join(separator), 'store-items');
@@ -611,10 +640,16 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
       saved.scrollTop = element.scrollTop;
       try { localStorage.setItem(STORE_VIEW_KEY, JSON.stringify(storeView.current)); } catch {}
     }, 150);
-    if (element.scrollTop + element.clientHeight >= element.scrollHeight - 420 && nextCursor && !loadingMore && !loadingAll) {
-      fetchItems(false, nextCursor);
-    }
+    loadMoreIfNear(element);
   };
+
+  // Fetch the next page while ~3 screens of cards remain, so its images arrive before they scroll into view.
+  const loadMoreIfNear = (element: HTMLElement | null) => {
+    if (!element || !nextCursor || loading || loadingMore || loadingAll) return;
+    if (element.scrollTop + element.clientHeight * 4 >= element.scrollHeight) fetchItems(false, nextCursor);
+  };
+  // Also after each page lands: the short first page (30 items) rarely fills 3 screens on its own.
+  useEffect(() => { loadMoreIfNear(scrollRef.current); }, [nextCursor, loading, loadingMore]);
 
   useLayoutEffect(() => {
     const pending = pendingScrollRestoreRef.current;
@@ -654,7 +689,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
           className="relative flex h-[100dvh] w-[100vw] max-w-none flex-col overflow-hidden rounded-none border-0 bg-neutral-950 shadow-none"
         >
           {/* Header Bar */}
-          <div className="p-3.5 sm:p-5 border-b border-white/[0.08] bg-black/40 backdrop-blur-md flex items-center justify-between gap-3 shrink-0">
+          <div className="p-3.5 sm:p-5 border-b border-white/[0.08] bg-black/40 flex items-center justify-between gap-3 shrink-0">
             {/* Group Identity */}
             <div className="flex items-center gap-3 min-w-0">
               <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-black/60 border border-white/15 overflow-hidden shrink-0 flex items-center justify-center shadow-md">
@@ -770,7 +805,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
               {groupTab === 'assets' && <CreatorAssetGrid creator={{ kind: 'group', id: currentGroup.id }} />}
             </div>
           ) : (<>
-          <div className="z-20 shrink-0 border-b border-white/[0.06] bg-black/80 p-3 backdrop-blur-xl sm:p-4">
+          <div className="z-20 shrink-0 border-b border-white/[0.06] bg-black/80 p-3 sm:p-4">
             <div className="grid items-center gap-2.5 lg:grid-cols-[minmax(220px,1fr)_auto] lg:gap-3">
             {/* Search Input */}
             <div className="relative flex-1 min-w-[180px]">
@@ -792,7 +827,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
               )}
             </div>
 
-            <div role="group" aria-label="Store sections" className="grid grid-cols-2 gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1 sm:grid-cols-4">
+            <div role="group" aria-label="Store sections" className="grid grid-cols-2 gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1 sm:grid-cols-5">
               {SECTIONS.map(([key, label]) => {
                 const count = summary?.[key];
                 return (
@@ -809,6 +844,32 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                 );
               })}
             </div>
+
+            {/* Item type chips: only the types this store actually has. Picking one loads the rest of the
+                section in the background so every matching item shows, not just the loaded pages. */}
+            {kindChips.length > 1 && section && (
+              <div role="group" aria-label="Item types" className="flex min-w-0 items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar lg:col-span-2 lg:pb-0">
+                {([['all', 'All types', items.length] as [string, string, number], ...kindChips]).map(([key, label, n]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    aria-pressed={kind === key}
+                    onClick={() => {
+                      setKindPick({ group: currentGroup.id, section, key });
+                      if (key !== 'all' && nextCursor) void loadAllRemaining(true);
+                    }}
+                    className={`shrink-0 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-mono transition-all flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${
+                      kind === key
+                        ? 'bg-white/15 text-white font-semibold border border-white/20 shadow-sm'
+                        : 'bg-white/[0.03] text-white/50 hover:text-white border border-white/[0.06]'
+                    }`}
+                  >
+                    <span>{label}</span>
+                    <span className="text-[10px] opacity-60 tabular-nums">{n.toLocaleString()}{nextCursor ? '+' : ''}</span>
+                  </button>
+                ))}
+              </div>
+            )}
 
             {/* Filter Pills & Sort Row */}
             <div className="flex min-w-0 items-center gap-2 overflow-x-auto pb-1 no-scrollbar lg:col-span-2 lg:pb-0">
@@ -868,7 +929,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
               </div>
 
               {/* Sort Dropdown */}
-              <FilterMenu label="Sort catalog" icon={<ArrowUpDown className="w-3.5 h-3.5" />} value={sortOption} options={[['RecentlyCreated', 'Newest'], ['PriceAsc', 'Price: Low to High'], ['PriceDesc', 'Price: High to Low']]} onChange={(value) => setSortOption(value as SortOption)} />
+              <FilterMenu label="Sort catalog" icon={<ArrowUpDown className="w-3.5 h-3.5" />} value={sortOption} options={[['RecentlyCreated', 'Recently released'], ['PriceAsc', 'Price: Low to High'], ['PriceDesc', 'Price: High to Low']]} onChange={(value) => setSortOption(value as SortOption)} />
               <FilterMenu label="Price range" value={priceFilter} options={ [['all', 'Any price'], ['free', 'Free'], ['under100', 'Under 100 R$'], ['100plus', '100+ R$']] } onChange={(value) => setPriceFilter(value as PriceFilter)} />
             </div>
             </div>
@@ -877,7 +938,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
           {/* Three-pane store workspace */}
           <div className="flex flex-1 min-h-0 overflow-hidden">
             {(isGroupsOpen || isSelectionOpen) && <button type="button" className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" onClick={() => { setIsGroupsOpen(false); setIsSelectionOpen(false); }} aria-label="Close side panel" />}
-            <aside className={`${isGroupsOpen ? 'fixed inset-y-0 left-0 z-[60] flex w-[min(18rem,88vw)] shadow-2xl' : 'hidden md:flex w-56 lg:w-64'} shrink-0 flex-col border-r border-white/[0.08] bg-neutral-950/95 backdrop-blur-xl`}>
+            <aside className={`${isGroupsOpen ? 'fixed inset-y-0 left-0 z-[60] flex w-[min(18rem,88vw)] shadow-2xl' : 'hidden md:flex w-56 lg:w-64'} shrink-0 flex-col border-r border-white/[0.08] bg-neutral-950/95`}>
               <div className="p-3 border-b border-white/[0.06]">
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-[10px] uppercase tracking-[0.18em] font-mono text-white/35">Group stores</span>
@@ -920,48 +981,19 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
                 </select>
               </div>
               <div className="flex-1 overflow-y-auto p-2 fancy-scroll">
-                {filteredGroups.map((storeGroup) => {
-                  const isSavedGroup = savedGroupIds.has(storeGroup.id);
-                  return (
-                    <div key={storeGroup.id} className={`mb-1 flex items-center rounded-xl transition-colors ${storeGroup.id === activeGroup.id ? 'bg-cyan-500/15 border border-cyan-400/60 text-white' : 'border border-transparent text-white/60 hover:bg-white/[0.05] hover:text-white'}`}>
-                      <button
-                        type="button"
-                        aria-current={storeGroup.id === activeGroup.id ? 'true' : undefined}
-                        onClick={() => { if (storeGroup.id === activeGroup.id) void fetchItems(true, ''); else { catalogAbortRef.current?.abort(); requestGenerationRef.current++; manualGroupSelectionRef.current = true; setActiveGroup(storeGroup); } localStorage.setItem('wornby_last_store_group', String(storeGroup.id)); setIsGroupsOpen(false); }}
-                        className="flex min-w-0 flex-1 items-center gap-2.5 p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/50"
-                      >
-                        {storeGroup.iconUrl ? <img src={storeGroup.iconUrl} alt="" className="w-8 h-8 rounded-lg object-cover bg-black/40" /> : <div className="w-8 h-8 rounded-lg bg-white/[0.06] flex items-center justify-center"><Store className="w-3.5 h-3.5 text-white/35" /></div>}
-                        <span className="min-w-0 flex-1"><span className="block truncate text-xs font-medium">{storeGroup.name}</span><GroupAnalysisSummary group={viewedGroupsById.get(storeGroup.id)} analyzing={storeGroup.id === activeGroup.id && (loading || loadingAll || loadingMore)} compact /></span>
-                        {storeGroup.id === activeGroup.id && <span className="shrink-0 text-[9px] font-mono font-bold uppercase tracking-wide text-cyan-300">Viewing</span>}
-                      </button>
-                      {groupListSource === 'player' && onSaveGroup && (
-                        <Tooltip content={<TooltipMono label={isSavedGroup ? 'Saved group' : 'Save group'} hint={isSavedGroup ? 'Already in Saved stores' : 'Add to Saved stores'} />} side="right">
-                          <button
-                            type="button"
-                            onClick={() => saveGroupFromStore(storeGroup as RobloxGroupMembership)}
-                            disabled={isSavedGroup}
-                            aria-label={isSavedGroup ? `${storeGroup.name} is saved` : `Save ${storeGroup.name}`}
-                            className={`mr-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${isSavedGroup ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/[0.04] text-white/45 hover:border-white/25 hover:text-white'}`}
-                          >
-                            {isSavedGroup ? <Check className="h-3.5 w-3.5" /> : <FolderPlus className="h-3.5 w-3.5" />}
-                          </button>
-                        </Tooltip>
-                      )}
-                      {groupListSource === 'saved' && onRemoveSavedGroup && (
-                        <Tooltip content={<TooltipMono label="Remove group" hint="Remove from Saved stores" />} side="right">
-                          <button
-                            type="button"
-                            onClick={() => removeGroupFromSaved(storeGroup as RobloxGroupMembership)}
-                            aria-label={`Remove ${storeGroup.name} from saved groups`}
-                            className="mr-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-white/35 transition-colors hover:border-rose-500/25 hover:bg-rose-500/10 hover:text-rose-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/70"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </Tooltip>
-                      )}
-                    </div>
-                  );
-                })}
+                {filteredGroups.map((storeGroup) => (
+                  <StoreGroupRow
+                    key={storeGroup.id}
+                    group={storeGroup}
+                    active={storeGroup.id === activeGroup.id}
+                    saved={savedGroupIds.has(storeGroup.id)}
+                    summary={viewedGroupsById.get(storeGroup.id)}
+                    analyzing={storeGroup.id === activeGroup.id && (loading || loadingAll || loadingMore)}
+                    canSave={groupListSource === 'player' && !!onSaveGroup}
+                    canRemove={groupListSource === 'saved' && !!onRemoveSavedGroup}
+                    actions={groupRowActions}
+                  />
+                ))}
                 {filteredGroups.length === 0 && <div className="px-3 py-8 text-center text-[11px] font-mono text-white/40">{sourceGroups.length > 0 ? 'No groups match this filter.' : groupListSource === 'saved' ? 'No saved group stores yet.' : groupListSource === 'viewed' ? 'No viewed group stores yet.' : 'No player group stores found.'}</div>}
               </div>
             </aside>
@@ -1058,7 +1090,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
               onDragOver={(event) => { event.preventDefault(); setIsDragOverSelection(true); }}
               onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setIsDragOverSelection(false); }}
               onDrop={(event) => { event.preventDefault(); dropDraggedItem(); }}
-              className={`${isSelectionOpen ? 'fixed inset-y-0 right-0 z-[60] w-[min(22rem,92vw)] shadow-2xl' : 'hidden lg:flex w-72'} ${isDragOverSelection ? 'bg-white/[0.08] ring-1 ring-inset ring-white/40' : 'bg-neutral-950/95'} shrink-0 flex-col border-l border-white/[0.08] backdrop-blur-xl transition-colors`}
+              className={`${isSelectionOpen ? 'fixed inset-y-0 right-0 z-[60] w-[min(22rem,92vw)] shadow-2xl' : 'hidden lg:flex w-72'} ${isDragOverSelection ? 'bg-white/[0.08] ring-1 ring-inset ring-white/40' : 'bg-neutral-950/95'} shrink-0 flex-col border-l border-white/[0.08] transition-colors`}
             >
               <div className="flex items-center justify-between gap-2 p-3 border-b border-white/[0.08]">
                 <div><div className="text-xs uppercase tracking-[0.16em] font-mono text-white/45">Selected items</div><div className="text-[11px] font-mono text-white/80 mt-1">{selectedItems.length} selected · {selectedTotal.toLocaleString()} R$</div></div>
@@ -1082,7 +1114,7 @@ export const GroupStoreModal: React.FC<GroupStoreModalProps> = ({
 
           {/* Footer Bar */}
           {groupTab === 'store' && (
-          <div className="px-4 sm:px-6 py-2.5 sm:py-3 border-t border-white/[0.06] bg-black/40 backdrop-blur-md flex items-center justify-between text-[11px] sm:text-xs font-mono text-white/40 shrink-0">
+          <div className="px-4 sm:px-6 py-2.5 sm:py-3 border-t border-white/[0.06] bg-black/40 flex items-center justify-between text-[11px] sm:text-xs font-mono text-white/40 shrink-0">
             <span>
               Showing {filteredItems.length} of {items.length} loaded items
             </span>
@@ -1113,6 +1145,54 @@ interface StoreItemCardProps {
   isNew: boolean;
   selectionMode: boolean;
 }
+
+type StoreGroupRowGroup = { id: number; name: string; iconUrl?: string | null };
+interface StoreGroupRowActions { onPick: (g: StoreGroupRowGroup) => void; onSave: (g: StoreGroupRowGroup) => void; onRemove: (g: StoreGroupRowGroup) => void }
+
+/** One sidebar group; memoized so selecting or filtering items doesn't re-render the whole list. */
+const StoreGroupRow = React.memo(function StoreGroupRow({ group: storeGroup, active, saved, summary, analyzing, canSave, canRemove, actions }: {
+  group: StoreGroupRowGroup; active: boolean; saved: boolean; summary: React.ComponentProps<typeof GroupAnalysisSummary>['group']; analyzing: boolean; canSave: boolean; canRemove: boolean; actions: StoreGroupRowActions;
+}) {
+  return (
+                    <div className={`mb-1 flex items-center rounded-xl transition-colors ${active ? 'bg-cyan-500/15 border border-cyan-400/60 text-white' : 'border border-transparent text-white/60 hover:bg-white/[0.05] hover:text-white'}`}>
+                      <button
+                        type="button"
+                        aria-current={active ? 'true' : undefined}
+                        onClick={() => actions.onPick(storeGroup)}
+                        className="flex min-w-0 flex-1 items-center gap-2.5 p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/50"
+                      >
+                        {storeGroup.iconUrl ? <img src={storeGroup.iconUrl} alt="" className="w-8 h-8 rounded-lg object-cover bg-black/40" /> : <div className="w-8 h-8 rounded-lg bg-white/[0.06] flex items-center justify-center"><Store className="w-3.5 h-3.5 text-white/35" /></div>}
+                        <span className="min-w-0 flex-1"><span className="block truncate text-xs font-medium">{storeGroup.name}</span><GroupAnalysisSummary group={summary} analyzing={analyzing} compact /></span>
+                        {active && <span className="shrink-0 text-[9px] font-mono font-bold uppercase tracking-wide text-cyan-300">Viewing</span>}
+                      </button>
+                      {canSave && (
+                        <Tooltip content={<TooltipMono label={saved ? 'Saved group' : 'Save group'} hint={saved ? 'Already in Saved stores' : 'Add to Saved stores'} />} side="right">
+                          <button
+                            type="button"
+                            onClick={() => actions.onSave(storeGroup)}
+                            disabled={saved}
+                            aria-label={saved ? `${storeGroup.name} is saved` : `Save ${storeGroup.name}`}
+                            className={`mr-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${saved ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-white/[0.04] text-white/45 hover:border-white/25 hover:text-white'}`}
+                          >
+                            {saved ? <Check className="h-3.5 w-3.5" /> : <FolderPlus className="h-3.5 w-3.5" />}
+                          </button>
+                        </Tooltip>
+                      )}
+                      {canRemove && (
+                        <Tooltip content={<TooltipMono label="Remove group" hint="Remove from Saved stores" />} side="right">
+                          <button
+                            type="button"
+                            onClick={() => actions.onRemove(storeGroup)}
+                            aria-label={`Remove ${storeGroup.name} from saved groups`}
+                            className="mr-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-white/35 transition-colors hover:border-rose-500/25 hover:bg-rose-500/10 hover:text-rose-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/70"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </Tooltip>
+                      )}
+                    </div>
+  );
+});
 
 const StoreItemCard = React.memo(function StoreItemCard({ item, actions, isWishlisted, isSelected, isNew, selectionMode }: StoreItemCardProps) {
   const [loadedImageUrl, setLoadedImageUrl] = useState<string | null>(null);
@@ -1193,15 +1273,15 @@ const StoreItemCard = React.memo(function StoreItemCard({ item, actions, isWishl
         {/* Price Tag Overlay on bottom of thumbnail */}
         <div className="absolute bottom-1.5 left-1.5 right-1.5 flex items-center justify-between pointer-events-none">
           {item.isForSale && item.price !== null && item.price > 1 ? (
-            <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-emerald-950/90 backdrop-blur-md border border-emerald-500/40 text-emerald-300 font-mono text-[10px] font-bold shadow-sm">
+            <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-emerald-950/90 border border-emerald-500/40 text-emerald-300 font-mono text-[10px] font-bold shadow-sm">
               {item.price.toLocaleString()} R$
             </span>
           ) : item.isFree ? (
-            <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-emerald-950/90 backdrop-blur-md border border-emerald-500/40 text-emerald-300 font-mono text-[10px] font-bold shadow-sm">
+            <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-emerald-950/90 border border-emerald-500/40 text-emerald-300 font-mono text-[10px] font-bold shadow-sm">
               FREE
             </span>
           ) : (
-            <span className="px-1.5 py-0.5 rounded bg-black/80 backdrop-blur-md border border-white/10 text-amber-300/80 font-mono text-[9px] font-medium">
+            <span className="px-1.5 py-0.5 rounded bg-black/80 border border-white/10 text-amber-300/80 font-mono text-[9px] font-medium">
               OFF-SALE
             </span>
           )}

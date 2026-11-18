@@ -5,10 +5,10 @@ import { AssetCard } from './AssetCard';
 import { GroupCard } from './GroupCard';
 import { TiltCard } from './TiltCard';
 import { Card, CardContent } from './ui/card';
-import Balatro from './ui/Balatro';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs';
 import { toast } from 'sonner';
 import { AudioHaptics } from './AudioHaptics';
+import { AppBackground } from './AppBackground';
 import { FALLBACK_AVATAR_SVG } from '../lib/fallbacks';
 import {
   ArrowLeft,
@@ -133,7 +133,10 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
     }
   };
 
-  const handleSaveGroup = (group: RobloxGroupMembership) => folder.add(group, { name: data.user.name, id: data.user.id });
+  // stable so memoized group cards don't re-render when the inspector does (e.g. opening a store)
+  const { add: addToFolder } = folder;
+  const handleSaveGroup = useCallback((group: RobloxGroupMembership) => addToFolder(group, { name: data.user.name, id: data.user.id }), [addToFolder, data.user.name, data.user.id]);
+  const openStore = useCallback((g: RobloxGroupMembership) => setStoreModalGroup(g), []);
 
   const handleClearCopiedMemory = () => {
     AudioHaptics.playClearCache();
@@ -248,21 +251,11 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
 
   return (
     <>
-      {/* Persistent Balatro Background for Stage 2 */}
+      {/* ASCII background, frozen after its intro: the many glass (backdrop-blur) panels here would re-blur every animated frame */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden z-[-1]" aria-hidden="true">
-        <Balatro
-          spinRotation={-4}
-          spinSpeed={20}
-          color1="#ffffff"
-          color2="#7f8182"
-          color3="#000000"
-          contrast={5.5}
-          lighting={0.5}
-          spinAmount={0.15}
-          pixelFilter={800}
-        />
-        {/* Darker Vignette for Stage 2 so content remains readable */}
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(0,0,0,0.3)_0%,rgba(0,0,0,0.85)_100%)]" />
+        <AppBackground paused />
+        {/* Vignette: keeps content readable while the calm background still shows at the edges */}
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(0,0,0,0.2)_0%,rgba(0,0,0,0.65)_100%)]" />
       </div>
 
       <main className="relative min-h-screen w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 pb-24 md:py-12 md:pb-28 flex flex-col gap-8">
@@ -744,7 +737,7 @@ export const Stage2Inspector: React.FC<Stage2InspectorProps> = ({
                     index={idx}
                     isSaved={copiedGroupIds.has(grp.id)}
                     onSaveGroup={handleSaveGroup}
-                    onOpenStore={(g) => setStoreModalGroup(g)}
+                    onOpenStore={openStore}
                   />
                 ))}
               </motion.div>

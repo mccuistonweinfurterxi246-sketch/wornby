@@ -174,7 +174,7 @@ test('store sections fit a phone screen', async ({ page }) => {
   }));
   await page.route(/\/api\/group\/601\/store\?/, (route) => route.fulfill({ json: { items: [], nextPageCursor: null } }));
   await page.route(/\/api\/group\/601\/store-summary/, (route) => route.fulfill({ json: {
-    clothing: { count: 1, more: false }, accessories: { count: 1200, more: true }, heads: { count: 548, more: false }, animations: { count: 3, more: false } } }));
+    clothing: { count: 1, more: false }, accessories: { count: 1200, more: true }, heads: { count: 548, more: false }, hair: { count: 30, more: false }, animations: { count: 3, more: false } } }));
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('http://127.0.0.1:5173/');
   const search = page.getByRole('textbox', { name: 'Roblox username, user ID, or profile link' });
@@ -183,11 +183,95 @@ test('store sections fit a phone screen', async ({ page }) => {
   await page.getByRole('tab', { name: /COMMUNITIES/ }).click();
   await page.getByRole('button', { name: 'Browse Group Store' }).click({ force: true });
   const sections = page.getByRole('group', { name: 'Store sections' });
-  for (const name of [/CLOTHING\s*1/, /ACCESSORIES\s*1,200\+/, /HEADS & FACES\s*548/, /ANIMATIONS\s*3/]) {
+  for (const name of [/CLOTHING\s*1/, /ACCESSORIES\s*1,200\+/, /HEADS & FACES\s*548/, /HAIR\s*30/, /ANIMATIONS\s*3/]) {
     await expect(sections.getByRole('button', { name })).toBeVisible();
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: 'test-results/store-sections-mobile.png' });
+});
+
+test('a hair-only group store opens on its hair', async ({ page }) => {
+  // Roblox lists hair only under Head & Body, so it gets its own section instead of being dropped.
+  const group = { id: 701, name: 'Hair Studio', memberCount: 4, hasVerifiedBadge: false, roleName: 'Member', roleRank: 1, iconUrl: null };
+  const sections: (string | null)[] = [];
+  await page.route('**/api/user/**', (route) => route.fulfill({
+    status: 200,
+    contentType: 'text/event-stream',
+    body: `event: done
+data: ${JSON.stringify({
+      user: { id: 1, name: 'Alpha', displayName: 'Alpha', hasVerifiedBadge: false },
+      thumbnails: { fullBodyUrl: null, headshotUrl: null },
+      outfit: { totalValueRobux: 0, hasOffSaleItems: false, offSaleCount: 0, freeCount: 0, pricedCount: 0, itemCount: 0, items: [] },
+      groups: [group],
+      telemetry: { cached: false, timestamp: Date.now(), responseTimeMs: 1, wearingAssetCount: 0 },
+    })}
+
+`,
+  }));
+  await page.route(/\/api\/group\/701\/store\?/, (route) => {
+    const section = new URL(route.request().url()).searchParams.get('section');
+    sections.push(section);
+    const items = section === 'hair' ? [{
+      id: 7001, name: 'Messy Bun', description: '', assetType: 41, assetTypeName: 'Hair Accessory', creatorName: 'Hair Studio',
+      price: 75, isForSale: true, isOffSale: false, isDeletedOrModerated: false, isFree: false, thumbnailUrl: null,
+      studioLuaCommand: '', catalogUrl: 'https://www.roblox.com/catalog/7001',
+    }] : [];
+    return route.fulfill({ json: { items, nextPageCursor: null } });
+  });
+  await page.route(/\/api\/group\/701\/store-summary/, (route) => route.fulfill({ json: {
+    clothing: { count: 0, more: false }, accessories: { count: 0, more: false }, heads: { count: 0, more: false }, hair: { count: 1, more: false }, animations: { count: 0, more: false } } }));
+  await page.route('**/api/asset-thumbnails', (route) => route.fulfill({ json: { thumbnails: {} } }));
+  await page.goto('http://127.0.0.1:5173/');
+  const search = page.getByRole('textbox', { name: 'Roblox username, user ID, or profile link' });
+  await search.fill('Alpha');
+  await search.press('Enter');
+  await page.getByRole('tab', { name: /COMMUNITIES/ }).click();
+  await page.getByRole('button', { name: 'Browse Group Store' }).click({ force: true });
+  await expect(page.getByRole('group', { name: 'Store sections' }).getByRole('button', { name: /HAIR\s*1/ })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByText('Messy Bun')).toBeVisible();
+  expect(sections).toContain('hair');
+});
+
+test('item type chips narrow a section to one kind of clothing', async ({ page }) => {
+  const group = { id: 801, name: 'Fit Studio', memberCount: 4, hasVerifiedBadge: false, roleName: 'Member', roleRank: 1, iconUrl: null };
+  const item = (id: number, assetType: number, name: string) => ({
+    id, name, description: '', assetType, assetTypeName: name, creatorName: 'Fit Studio', price: 5, isForSale: true, isOffSale: false,
+    isDeletedOrModerated: false, isFree: false, thumbnailUrl: null, studioLuaCommand: '', catalogUrl: `https://www.roblox.com/catalog/${id}`,
+  });
+  await page.route('**/api/user/**', (route) => route.fulfill({
+    status: 200,
+    contentType: 'text/event-stream',
+    body: `event: done
+data: ${JSON.stringify({
+      user: { id: 1, name: 'Alpha', displayName: 'Alpha', hasVerifiedBadge: false },
+      thumbnails: { fullBodyUrl: null, headshotUrl: null },
+      outfit: { totalValueRobux: 0, hasOffSaleItems: false, offSaleCount: 0, freeCount: 0, pricedCount: 0, itemCount: 0, items: [] },
+      groups: [group],
+      telemetry: { cached: false, timestamp: Date.now(), responseTimeMs: 1, wearingAssetCount: 0 },
+    })}
+
+`,
+  }));
+  await page.route(/\/api\/group\/801\/store\?/, (route) => route.fulfill({ json: { nextPageCursor: null,
+    items: [item(1, 11, 'Plain Shirt'), item(2, 65, 'Layered Shirt'), item(3, 12, 'Cargo Pants'), item(4, 67, 'Bomber Jacket')] } }));
+  await page.route(/\/api\/group\/801\/store-summary/, (route) => route.fulfill({ json: {
+    clothing: { count: 4, more: false }, accessories: { count: 0, more: false }, heads: { count: 0, more: false }, hair: { count: 0, more: false }, animations: { count: 0, more: false } } }));
+  await page.route('**/api/asset-thumbnails', (route) => route.fulfill({ json: { thumbnails: {} } }));
+  await page.goto('http://127.0.0.1:5173/');
+  const search = page.getByRole('textbox', { name: 'Roblox username, user ID, or profile link' });
+  await search.fill('Alpha');
+  await search.press('Enter');
+  await page.getByRole('tab', { name: /COMMUNITIES/ }).click();
+  await page.getByRole('button', { name: 'Browse Group Store' }).click({ force: true });
+  const chips = page.getByRole('group', { name: 'Item types' });
+  await expect(chips.getByRole('button', { name: /Shirts\s*2/ })).toBeVisible();
+  await expect(chips.getByRole('button', { name: /Pants\s*1/ })).toBeVisible();
+  await expect(chips.getByRole('button', { name: /Sweaters/ })).toHaveCount(0);
+  await chips.getByRole('button', { name: /Jackets\s*1/ }).click();
+  await expect(page.getByRole('checkbox', { name: /Bomber Jacket/ })).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: /Cargo Pants/ })).toHaveCount(0);
+  await chips.getByRole('button', { name: /All types/ }).click();
+  await expect(page.getByRole('checkbox', { name: /Cargo Pants/ })).toBeVisible();
 });
 
 test('missing store images can be retried without reopening the group', async ({ page }) => {

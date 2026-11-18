@@ -148,7 +148,7 @@ pub async fn members(group_id: u64, cursor: &str) -> Result<(Value, bool), UpErr
     let mut list = parse_members(&data);
     let ids: Vec<u64> = list.iter().filter_map(|m| m["id"].as_u64()).collect();
     let (heads, complete) = thumbs(
-        "https://thumbnails.roblox.com/v1/users/avatar-headshot?size=150x150&format=Png&isCircular=false&userIds=",
+        "https://thumbnails.roblox.com/v1/users/avatar-headshot?size=150x150&format=Webp&isCircular=false&userIds=",
         &ids,
     )
     .await;
@@ -200,7 +200,7 @@ pub async fn experiences(c: Creator, cursor: &str) -> Result<(Value, bool), UpEr
     let mut list = parse_games(&data);
     let ids: Vec<u64> = list.iter().filter_map(|g| g["universeId"].as_u64()).collect();
     let (icons, complete) = thumbs(
-        "https://thumbnails.roblox.com/v1/games/icons?size=150x150&format=Png&universeIds=",
+        "https://thumbnails.roblox.com/v1/games/icons?size=150x150&format=Webp&universeIds=",
         &ids,
     )
     .await;

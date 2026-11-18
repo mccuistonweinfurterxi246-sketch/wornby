@@ -137,7 +137,7 @@ pub async fn saved_outfits(user_id: u64, page_token: &str) -> Result<Value, UpEr
                 .collect::<Vec<_>>()
                 .join(",");
             let thumbs = format!(
-                "https://thumbnails.roblox.com/v1/users/outfits?userOutfitIds={list}&size=420x420&format=Png&isCircular=false"
+                "https://thumbnails.roblox.com/v1/users/outfits?userOutfitIds={list}&size=420x420&format=Webp&isCircular=false"
             );
             let Ok(answer) = get_hedged(
                 client(),

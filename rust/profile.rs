@@ -347,9 +347,9 @@ async fn equipped_assets(user_id: u64) -> Vec<BaseAsset> {
 async fn avatar_thumbnails(user_id: u64) -> Value {
     let base = "https://thumbnails.roblox.com/v1/users";
     let full_url =
-        format!("{base}/avatar?userIds={user_id}&size=420x420&format=Png&isCircular=false");
+        format!("{base}/avatar?userIds={user_id}&size=420x420&format=Webp&isCircular=false");
     let head_url = format!(
-        "{base}/avatar-headshot?userIds={user_id}&size=150x150&format=Png&isCircular=false"
+        "{base}/avatar-headshot?userIds={user_id}&size=150x150&format=Webp&isCircular=false"
     );
     let (full, head) = tokio::join!(
         get_official(client(), &full_url, AVATAR_TIMEOUT),
@@ -395,7 +395,7 @@ pub(crate) async fn user_groups_checked(user_id: u64) -> Result<Vec<Value>, UpEr
             .collect::<Vec<_>>()
             .join(",");
         let url = format!(
-            "https://thumbnails.roblox.com/v1/groups/icons?groupIds={list}&size=150x150&format=Png"
+            "https://thumbnails.roblox.com/v1/groups/icons?groupIds={list}&size=150x150&format=Webp"
         );
         get_official(client_for(chunk[0]), &url, AVATAR_TIMEOUT).await
     });
@@ -821,7 +821,7 @@ pub async fn search_users(keyword: &str) -> Result<Value, UpErr> {
     if !ids.is_empty() {
         let list = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
         let thumbs_url = format!(
-            "https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={list}&size=150x150&format=Png&isCircular=false"
+            "https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={list}&size=150x150&format=Webp&isCircular=false"
         );
         // Suggestions are still useful when the thumbnail service is unavailable.
         if let Ok(thumbs) = get_official(client(), &thumbs_url, Duration::from_secs(7)).await {

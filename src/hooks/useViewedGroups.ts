@@ -92,9 +92,11 @@ export function useViewedGroups() {
     const entries = readViewedGroups();
     if (!entries.some((entry) => entry.id === groupId)) return;
     const clothingCount = summary.clothing.count;
-    const itemCount = summary.accessories.count + summary.heads.count + summary.animations.count;
+    // hair is optional: summaries cached before the Hair section existed don't have it
+    const hairCount = summary.hair?.count ?? 0;
+    const itemCount = summary.accessories.count + summary.heads.count + hairCount + summary.animations.count;
     const complete = !Object.values(summary).some((s) => s.more);
-    const tags = ([['Clothing', summary.clothing.count], ['Accessories', summary.accessories.count], ['Heads & faces', summary.heads.count], ['Animations', summary.animations.count]] as const)
+    const tags = ([['Clothing', summary.clothing.count], ['Accessories', summary.accessories.count], ['Heads & faces', summary.heads.count], ['Hair', hairCount], ['Animations', summary.animations.count]] as const)
       .filter(([, count]) => count > 0).map(([label, count]) => ({ label, count }));
     const category: ViewedGroupCategory = clothingCount > 0 && itemCount > 0 ? 'mixed' : clothingCount > 0 ? 'clothing' : itemCount > 0 ? 'items' : 'empty';
     writeViewedGroups(entries.map((entry) => entry.id === groupId ? {

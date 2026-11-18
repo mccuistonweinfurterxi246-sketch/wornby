@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useId } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useMountedOnce } from '../lazyPanels';
 
 type Side = 'top' | 'bottom' | 'left' | 'right';
 
@@ -22,6 +23,9 @@ export const Tooltip: React.FC<TooltipProps> = ({
   className,
 }) => {
   const [open, setOpen] = useState(false);
+  // Closed tooltips render nothing: hundreds of cards each kept a portal + AnimatePresence mounted.
+  // Stays true after the first open so the exit animation can still play.
+  const used = useMountedOnce(open);
   const [pos, setPos] = useState<{ top: number; left: number; actualSide: Side }>({ top: 0, left: 0, actualSide: side });
   const triggerRef = useRef<HTMLElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -36,6 +40,8 @@ export const Tooltip: React.FC<TooltipProps> = ({
     if (timerRef.current) window.clearTimeout(timerRef.current);
     setOpen(false);
   };
+
+  useEffect(() => () => { if (timerRef.current) window.clearTimeout(timerRef.current); }, []);
 
   useEffect(() => {
     if (!open || !triggerRef.current) return;
@@ -105,7 +111,7 @@ export const Tooltip: React.FC<TooltipProps> = ({
           style={{ top: pos.top, left: pos.left }}
           className={`fixed z-[100] pointer-events-none select-none ${className ?? ''}`}
         >
-          <div className="relative bg-[#0e0e0f]/95 backdrop-blur-xl border border-white/[0.08] rounded-lg px-3 py-[7px] shadow-[0_8px_32px_rgba(0,0,0,0.6),0_1px_3px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)]">
+          <div className="relative bg-[#0e0e0f]/95 border border-white/[0.08] rounded-lg px-3 py-[7px] shadow-[0_8px_32px_rgba(0,0,0,0.6),0_1px_3px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.06)]">
             {/* top highlight */}
             <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/[0.08] to-transparent rounded-t-lg pointer-events-none" />
             <div className="text-[11px] font-mono tracking-wide leading-none text-white/90 whitespace-nowrap flex items-center gap-1.5">
@@ -135,7 +141,7 @@ export const Tooltip: React.FC<TooltipProps> = ({
   return (
     <>
       {child}
-      {typeof document !== 'undefined' ? createPortal(tooltipNode, document.body) : null}
+      {used && typeof document !== 'undefined' ? createPortal(tooltipNode, document.body) : null}
     </>
   );
 };

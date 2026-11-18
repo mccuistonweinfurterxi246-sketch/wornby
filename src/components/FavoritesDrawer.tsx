@@ -107,7 +107,7 @@ export const FavoritesDrawer: React.FC<FavoritesDrawerProps> = ({
           className="relative w-full max-w-6xl max-h-[92vh] sm:max-h-[88vh] flex flex-col rounded-2xl sm:rounded-3xl bg-neutral-950/95 border border-white/10 shadow-[0_24px_64px_rgba(0,0,0,0.8)] overflow-hidden m-2 sm:m-4"
         >
           {/* Header Bar */}
-          <div className="p-3.5 sm:p-5 border-b border-white/[0.08] bg-black/40 backdrop-blur-md flex flex-wrap items-center justify-between gap-3 shrink-0">
+          <div className="p-3.5 sm:p-5 border-b border-white/[0.08] bg-black/40 flex flex-wrap items-center justify-between gap-3 shrink-0">
             {/* Title & Stats */}
             <div className="flex items-center gap-3.5">
               <div className="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-400 shrink-0 shadow-[0_0_15px_rgba(244,63,94,0.15)]">
@@ -254,7 +254,7 @@ export const FavoritesDrawer: React.FC<FavoritesDrawerProps> = ({
           </div>
 
           {/* Footer Bar */}
-          <div className="px-4 sm:px-6 py-3 border-t border-white/[0.06] bg-black/40 backdrop-blur-md flex items-center justify-between text-xs font-mono text-white/40 shrink-0">
+          <div className="px-4 sm:px-6 py-3 border-t border-white/[0.06] bg-black/40 flex items-center justify-between text-xs font-mono text-white/40 shrink-0">
             <span>
               Showing {filteredFavorites.length} of {favoritesCount} saved items
             </span>
@@ -327,15 +327,15 @@ const FavoriteItemCard: React.FC<FavoriteItemCardProps> = ({ item, onRemove, onO
         {/* Price Tag Overlay on bottom of thumbnail */}
         <div className="absolute bottom-1.5 left-1.5 right-1.5 flex items-center justify-between pointer-events-none">
           {item.isForSale && item.price !== null && item.price > 1 ? (
-            <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-emerald-950/90 backdrop-blur-md border border-emerald-500/40 text-emerald-300 font-mono text-[10px] font-bold shadow-sm">
+            <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-emerald-950/90 border border-emerald-500/40 text-emerald-300 font-mono text-[10px] font-bold shadow-sm">
               {item.price.toLocaleString()} R$
             </span>
           ) : item.isFree ? (
-            <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-emerald-950/90 backdrop-blur-md border border-emerald-500/40 text-emerald-300 font-mono text-[10px] font-bold shadow-sm">
+            <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-emerald-950/90 border border-emerald-500/40 text-emerald-300 font-mono text-[10px] font-bold shadow-sm">
               FREE
             </span>
           ) : (
-            <span className="px-1.5 py-0.5 rounded bg-black/80 backdrop-blur-md border border-white/10 text-amber-300/80 font-mono text-[9px] font-medium">
+            <span className="px-1.5 py-0.5 rounded bg-black/80 border border-white/10 text-amber-300/80 font-mono text-[9px] font-medium">
               OFF-SALE
             </span>
           )}

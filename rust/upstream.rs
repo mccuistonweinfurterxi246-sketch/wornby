@@ -249,8 +249,8 @@ pub enum ThumbKind {
 
 fn thumb_url(kind: ThumbKind, list: &str) -> String {
     match kind {
-        ThumbKind::Asset => format!("https://thumbnails.roblox.com/v1/assets?assetIds={list}&size=420x420&format=Png"),
-        ThumbKind::Bundle => format!("https://thumbnails.roblox.com/v1/bundles/thumbnails?bundleIds={list}&size=420x420&format=Png"),
+        ThumbKind::Asset => format!("https://thumbnails.roblox.com/v1/assets?assetIds={list}&size=420x420&format=Webp"),
+        ThumbKind::Bundle => format!("https://thumbnails.roblox.com/v1/bundles/thumbnails?bundleIds={list}&size=420x420&format=Webp"),
     }
 }
 
@@ -320,11 +320,11 @@ mod tests {
     fn bundles_use_the_bundle_thumbnail_service() {
         assert_eq!(
             thumb_url(ThumbKind::Bundle, "5,6"),
-            "https://thumbnails.roblox.com/v1/bundles/thumbnails?bundleIds=5,6&size=420x420&format=Png"
+            "https://thumbnails.roblox.com/v1/bundles/thumbnails?bundleIds=5,6&size=420x420&format=Webp"
         );
         assert_eq!(
             thumb_url(ThumbKind::Asset, "7"),
-            "https://thumbnails.roblox.com/v1/assets?assetIds=7&size=420x420&format=Png"
+            "https://thumbnails.roblox.com/v1/assets?assetIds=7&size=420x420&format=Webp"
         );
     }
 
